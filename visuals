@@ -1,8 +1,9 @@
--- // ANXIEE — Visuals Page (ImGui style)
-
+-- // ANXIEE — Visuals (ImGui) + NameTag + Boxes + Distance + Chams + Tracers + Skeleton
 local Players          = game:GetService("Players")
+local RunService       = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService     = game:GetService("TweenService")
+local Camera           = workspace.CurrentCamera
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui", 10)
@@ -13,17 +14,465 @@ if PlayerGui:FindFirstChild("Anxiee_Visuals") then
     return
 end
 
+-- ─── State ────────────────────────────────────────────────────────────────────
 local State = {
-    ESP = false, Boxes = false, HealthBar = false, NameTag = false,
-    Distance = false, Tracers = false, Chams = false, FullBright = false,
+    ESP       = false,
+    Boxes     = false,
+    HealthBar = false,
+    NameTag   = false,
+    Distance  = false,
+    Tracers   = false,
+    Chams     = false,
+    Skeleton  = false,
 }
 
+-- Configurações visuais
+local CHAM_COLOR           = Color3.fromRGB(255, 255, 0)   -- Amarelo
+local OUTLINE_COLOR        = Color3.fromRGB(255, 255, 255) -- Branco
+local FILL_TRANSPARENCY    = 0.5
+local OUTLINE_TRANSPARENCY = 0
+local TRACER_COLOR         = Color3.fromRGB(255, 255, 255) -- Branco
+local SKELETON_COLOR       = Color3.fromRGB(255, 255, 255) -- Branco
+
+-- Configurações de Espessura (Reduzidas)
+local BOX_THICKNESS    = 1 -- Espessura da borda da Box (mínimo de 1px)
+local TRACER_THICKNESS = 1 -- Espessura da linha de Tracer (mínimo de 1px)
+
+-- Conexões de articulações (Skeleton R15 & R6)
+local SKELETON_CONNECTIONS = {
+    -- R15
+    {"Head", "UpperTorso"},
+    {"UpperTorso", "LowerTorso"},
+    {"UpperTorso", "LeftUpperArm"},
+    {"LeftUpperArm", "LeftLowerArm"},
+    {"LeftLowerArm", "LeftHand"},
+    {"UpperTorso", "RightUpperArm"},
+    {"RightUpperArm", "RightLowerArm"},
+    {"RightLowerArm", "RightHand"},
+    {"LowerTorso", "LeftUpperLeg"},
+    {"LeftUpperLeg", "LeftLowerLeg"},
+    {"LeftLowerLeg", "LeftFoot"},
+    {"LowerTorso", "RightUpperLeg"},
+    {"RightUpperLeg", "RightLowerLeg"},
+    {"RightLowerLeg", "RightFoot"},
+    -- R6
+    {"Head", "Torso"},
+    {"Torso", "Left Arm"},
+    {"Torso", "Right Arm"},
+    {"Torso", "Left Leg"},
+    {"Torso", "Right Leg"}
+}
+
+-- ─── ESP Root (NameTag, Distance & Tracers layer) ────────────────────────────
+local ESPRoot = Instance.new("ScreenGui")
+ESPRoot.Name           = "ESP_Root"
+ESPRoot.ResetOnSpawn   = false
+ESPRoot.IgnoreGuiInset = true
+ESPRoot.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local ok = pcall(function() ESPRoot.Parent = gethui() end)
+if not ok or not ESPRoot.Parent then
+    ok = pcall(function() ESPRoot.Parent = game:GetService("CoreGui") end)
+end
+if not ok or not ESPRoot.Parent then
+    ESPRoot.Parent = PlayerGui
+end
+
+-- ─── Box Root (separado para isolamento) ──────────────────────────────────────
+local BoxRoot = Instance.new("ScreenGui")
+BoxRoot.Name           = "ESP_Box"
+BoxRoot.ResetOnSpawn   = false
+BoxRoot.IgnoreGuiInset = true
+BoxRoot.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+
+local ok2 = pcall(function() BoxRoot.Parent = gethui() end)
+if not ok2 or not BoxRoot.Parent then
+    ok2 = pcall(function() BoxRoot.Parent = game:GetService("CoreGui") end)
+end
+if not ok2 or not BoxRoot.Parent then
+    BoxRoot.Parent = PlayerGui
+end
+
+-- ─── getBounds (compartilhado) ────────────────────────────────────────────────
+local function getBounds(character)
+    local s, cf, sz = pcall(function() return character:GetBoundingBox() end)
+    if not s then return nil, nil, nil, nil end
+    local h = sz / 2
+    local corners = {
+        cf * Vector3.new(-h.X,  h.Y, -h.Z),
+        cf * Vector3.new( h.X,  h.Y, -h.Z),
+        cf * Vector3.new(-h.X, -h.Y, -h.Z),
+        cf * Vector3.new( h.X, -h.Y, -h.Z),
+        cf * Vector3.new(-h.X,  h.Y,  h.Z),
+        cf * Vector3.new( h.X,  h.Y,  h.Z),
+        cf * Vector3.new(-h.X, -h.Y,  h.Z),
+        cf * Vector3.new( h.X, -h.Y,  h.Z),
+    }
+    local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+    local visible = 0
+    for _, v in ipairs(corners) do
+        local sp = Camera:WorldToViewportPoint(v)
+        if sp.Z > 0 then
+            visible += 1
+            if sp.X < x0 then x0 = sp.X end
+            if sp.Y < y0 then y0 = sp.Y end
+            if sp.X > x1 then x1 = sp.X end
+            if sp.Y > y1 then y1 = sp.Y end
+        end
+    end
+    if visible == 0 or x1 <= x0 or y1 <= y0 then
+        return nil, nil, nil, nil
+    end
+    return x0, y0, x1, y1
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ─── TRACERS SYSTEM (LINE DOWN TO FEET) ──────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════════════════════
+local function makeTracer()
+    local f = Instance.new("Frame")
+    f.Name                   = "TracerLine"
+    f.AnchorPoint            = Vector2.new(0.5, 0.5)
+    f.BackgroundColor3       = TRACER_COLOR
+    f.BorderSizePixel        = 0
+    f.Visible                = false
+    f.ZIndex                 = 5
+    f.Parent                 = ESPRoot
+    return f
+end
+
+local function drawTracer(frame, targetPos)
+    local viewportSize = Camera.ViewportSize
+    local origin = Vector2.new(viewportSize.X / 2, viewportSize.Y) -- Centro Inferior
+    
+    local dx = targetPos.X - origin.X
+    local dy = targetPos.Y - origin.Y
+    local distance = math.sqrt(dx * dx + dy * dy)
+    local angle = math.deg(math.atan2(dy, dx))
+
+    frame.Size     = UDim2.fromOffset(distance, TRACER_THICKNESS)
+    frame.Position = UDim2.fromOffset((origin.X + targetPos.X) / 2, (origin.Y + targetPos.Y) / 2)
+    frame.Rotation = angle
+    frame.Visible  = true
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ─── SKELETON SYSTEM ──────────────────────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════════════════════
+local function removeSkeletonFromChar(character)
+    if not character then return end
+    local folder = character:FindFirstChild("3DSkeletonESP")
+    if folder then
+        folder:Destroy()
+    end
+end
+
+local function applySkeletonToChar(character)
+    if not character then return end
+    removeSkeletonFromChar(character)
+
+    local folder = Instance.new("Folder")
+    folder.Name = "3DSkeletonESP"
+    folder.Parent = character
+
+    local adornments = {}
+
+    for i = 1, #SKELETON_CONNECTIONS do
+        local wireframe = Instance.new("WireframeHandleAdornment")
+        wireframe.Color3 = SKELETON_COLOR
+        wireframe.AlwaysOnTop = true
+        wireframe.ZIndex = 10
+        wireframe.Adornee = workspace
+        wireframe.Parent = folder
+        table.insert(adornments, wireframe)
+    end
+
+    local conn: RBXScriptConnection? = nil
+    conn = RunService.RenderStepped:Connect(function()
+        if not character or not character.Parent or not character:FindFirstChild("HumanoidRootPart") or not folder.Parent or not State.Skeleton then
+            if not State.Skeleton then
+                folder:Destroy()
+            end
+            if conn then conn:Disconnect() end
+            return
+        end
+
+        for i, pair in ipairs(SKELETON_CONNECTIONS) do
+            local part1 = character:FindFirstChild(pair[1]) :: BasePart?
+            local part2 = character:FindFirstChild(pair[2]) :: BasePart?
+            local wireframe = adornments[i]
+
+            if part1 and part2 and wireframe then
+                wireframe:Clear()
+                wireframe:AddLine(part1.Position, part2.Position)
+                wireframe.Visible = true
+            elseif wireframe then
+                wireframe.Visible = false
+            end
+        end
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ─── BOX SYSTEM ───────────────────────────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════════════════════
+local BOX_COLOR = Color3.fromRGB(255, 255, 255)
+
+local function newBar()
+    local f = Instance.new("Frame")
+    f.BackgroundColor3       = BOX_COLOR
+    f.BackgroundTransparency = 0
+    f.BorderSizePixel        = 0
+    f.Visible                = false
+    f.Parent                 = BoxRoot
+    return f
+end
+
+local function makeBoxESP()
+    return { top = newBar(), bot = newBar(), lft = newBar(), rgt = newBar() }
+end
+
+local function destroyBoxESP(e)
+    e.top:Destroy()
+    e.bot:Destroy()
+    e.lft:Destroy()
+    e.rgt:Destroy()
+end
+
+local function hideBoxESP(e)
+    e.top.Visible = false
+    e.bot.Visible = false
+    e.lft.Visible = false
+    e.rgt.Visible = false
+end
+
+local function drawBox(e, x0, y0, x1, y1)
+    local w, h, T = x1 - x0, y1 - y0, BOX_THICKNESS
+    e.top.Position = UDim2.fromOffset(x0,     y0);     e.top.Size = UDim2.fromOffset(w, T); e.top.Visible = true
+    e.bot.Position = UDim2.fromOffset(x0,     y1 - T); e.bot.Size = UDim2.fromOffset(w, T); e.bot.Visible = true
+    e.lft.Position = UDim2.fromOffset(x0,     y0);     e.lft.Size = UDim2.fromOffset(T, h); e.lft.Visible = true
+    e.rgt.Position = UDim2.fromOffset(x1 - T, y0);     e.rgt.Size = UDim2.fromOffset(T, h); e.rgt.Visible = true
+end
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ─── NAMETAG & DISTANCE LABELS ────────────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════════════════════
+local TEXT_COLOR = Color3.fromRGB(255, 255, 255)
+
+local function makeNameLabel()
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1
+    l.BorderSizePixel        = 0
+    l.Text                   = ""
+    l.TextColor3             = TEXT_COLOR
+    l.TextSize               = 12
+    l.Font                   = Enum.Font.GothamBold
+    l.TextStrokeColor3       = Color3.new(0, 0, 0)
+    l.TextStrokeTransparency = 0.5
+    l.TextXAlignment         = Enum.TextXAlignment.Center
+    l.AnchorPoint            = Vector2.new(0.5, 1)
+    l.Visible                = false
+    l.ZIndex                 = 6
+    l.Parent                 = ESPRoot
+    return l
+end
+
+local function makeDistLabel()
+    local l = Instance.new("TextLabel")
+    l.BackgroundTransparency = 1
+    l.BorderSizePixel        = 0
+    l.Text                   = ""
+    l.TextColor3             = TEXT_COLOR
+    l.TextSize               = 10
+    l.Font                   = Enum.Font.GothamBold
+    l.TextStrokeColor3       = Color3.new(0, 0, 0)
+    l.TextStrokeTransparency = 0.5
+    l.TextXAlignment         = Enum.TextXAlignment.Center
+    l.AnchorPoint            = Vector2.new(0.5, 0)
+    l.Visible                = false
+    l.ZIndex                 = 6
+    l.Parent                 = ESPRoot
+    return l
+end
+
+-- ─── CHAMS SYSTEM ─────────────────────────────────────────────────────────────
+local function removeChamsFromChar(character)
+    if not character then return end
+    for _, v in ipairs(character:GetChildren()) do
+        if v:IsA("Highlight") and v.Name == "ChamsHighlight" then
+            v:Destroy()
+        end
+    end
+end
+
+local function applyChamsToChar(character)
+    if not character then return end
+    removeChamsFromChar(character)
+
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ChamsHighlight"
+    highlight.FillColor = CHAM_COLOR
+    highlight.FillTransparency = FILL_TRANSPARENCY
+    highlight.OutlineColor = OUTLINE_COLOR
+    highlight.OutlineTransparency = OUTLINE_TRANSPARENCY
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Adornee = character
+    highlight.Parent = character
+end
+
+-- ─── Pool unificado ───────────────────────────────────────────────────────────
+local espPool = {}
+
+local function addPlayer(p)
+    if p == LocalPlayer or espPool[p] then return end
+    
+    local connections = {}
+    connections[#connections + 1] = p.CharacterAdded:Connect(function(char)
+        if State.Chams then
+            task.defer(function()
+                applyChamsToChar(char)
+            end)
+        end
+        if State.Skeleton then
+            task.defer(function()
+                applySkeletonToChar(char)
+            end)
+        end
+    end)
+
+    espPool[p] = {
+        label       = makeNameLabel(),
+        distLabel   = makeDistLabel(),
+        boxESP      = makeBoxESP(),
+        tracer      = makeTracer(),
+        connections = connections
+    }
+
+    if p.Character then
+        if State.Chams then
+            task.defer(function() applyChamsToChar(p.Character) end)
+        end
+        if State.Skeleton then
+            task.defer(function() applySkeletonToChar(p.Character) end)
+        end
+    end
+end
+
+local function removePlayer(p)
+    local e = espPool[p]
+    if not e then return end
+
+    for _, conn in ipairs(e.connections or {}) do
+        conn:Disconnect()
+    end
+
+    if p.Character then
+        removeChamsFromChar(p.Character)
+        removeSkeletonFromChar(p.Character)
+    end
+
+    e.label:Destroy()
+    e.distLabel:Destroy()
+    e.tracer:Destroy()
+    destroyBoxESP(e.boxESP)
+    espPool[p] = nil
+end
+
+for _, p in ipairs(Players:GetPlayers()) do addPlayer(p) end
+Players.PlayerAdded:Connect(addPlayer)
+Players.PlayerRemoving:Connect(removePlayer)
+
+-- ─── RenderStepped unificado ──────────────────────────────────────────────────
+RunService.RenderStepped:Connect(function()
+    for player, entry in pairs(espPool) do
+        if not player or not player.Parent then
+            removePlayer(player)
+            continue
+        end
+
+        local char = player.Character
+        local hum  = char and char:FindFirstChildOfClass("Humanoid")
+        local root = char and char:FindFirstChild("HumanoidRootPart")
+        local alive = hum and hum.Health > 0
+
+        if not char or not alive or not root then
+            entry.label.Visible     = false
+            entry.distLabel.Visible = false
+            entry.tracer.Visible    = false
+            hideBoxESP(entry.boxESP)
+            continue
+        end
+
+        local x0, y0, x1, y1 = getBounds(char)
+
+        -- ── Name Tag ────────────────────────────────────────────────────────
+        if State.NameTag and x0 then
+            local w = x1 - x0
+            entry.label.Text     = player.DisplayName
+            entry.label.Position = UDim2.fromOffset(x0 + w * 0.5, y0 - 3)
+            entry.label.Size     = UDim2.fromOffset(w, 14)
+            entry.label.Visible  = true
+        else
+            entry.label.Visible = false
+        end
+
+        -- ── Distance ────────────────────────────────────────────────────────
+        if State.Distance and x0 then
+            local myChar = LocalPlayer.Character
+            local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
+
+            if myRoot then
+                local w = x1 - x0
+                local d = math.floor((root.Position - myRoot.Position).Magnitude)
+                entry.distLabel.Text     = d .. " studs"
+                entry.distLabel.Position = UDim2.fromOffset(x0 + w * 0.5, y1 + 1)
+                entry.distLabel.Size     = UDim2.fromOffset(w, 12)
+                entry.distLabel.Visible  = true
+            else
+                entry.distLabel.Visible = false
+            end
+        else
+            entry.distLabel.Visible = false
+        end
+
+        -- ── Tracers (Line Down -> Pés) ─────────────────────────────────────────
+        if State.Tracers then
+            local feetOffset = Vector3.new(0, (root.Size.Y / 2) + (hum.HipHeight or 0), 0)
+            local feetPosition = root.Position - feetOffset
+            
+            local screenPos, onScreen = Camera:WorldToViewportPoint(feetPosition)
+            if onScreen then
+                drawTracer(entry.tracer, Vector2.new(screenPos.X, screenPos.Y))
+            else
+                entry.tracer.Visible = false
+            end
+        else
+            entry.tracer.Visible = false
+        end
+
+        -- ── Boxes ────────────────────────────────────────────────────────────
+        if State.Boxes and x0 then
+            drawBox(entry.boxESP, x0, y0, x1, y1)
+        else
+            hideBoxESP(entry.boxESP)
+        end
+    end
+end)
+
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ─── GUI CONSTANTS ────────────────────────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════════════════════
 local C = {
-    WinBg = Color3.fromRGB(28,28,28), TitleBg = Color3.fromRGB(41,74,122),
-    TitleBgText = Color3.fromRGB(255,255,255), Border = Color3.fromRGB(90,90,90),
-    FrameBg = Color3.fromRGB(41,41,41), FrameBgHov = Color3.fromRGB(55,55,55),
-    CheckMark = Color3.fromRGB(79,144,220), Text = Color3.fromRGB(255,255,255),
-    SepLine = Color3.fromRGB(70,70,70), Header = Color3.fromRGB(160,160,160),
+    WinBg      = Color3.fromRGB(28,28,28),
+    TitleBg    = Color3.fromRGB(41,74,122),
+    TitleBgText= Color3.fromRGB(255,255,255),
+    Border     = Color3.fromRGB(90,90,90),
+    FrameBg    = Color3.fromRGB(41,41,41),
+    FrameBgHov = Color3.fromRGB(55,55,55),
+    CheckMark  = Color3.fromRGB(79,144,220),
+    Text       = Color3.fromRGB(255,255,255),
+    SepLine    = Color3.fromRGB(70,70,70),
+    Header     = Color3.fromRGB(160,160,160),
 }
 
 local FONT      = Enum.Font.Code
@@ -39,139 +488,323 @@ local TitleH    = IsMobile and 22 or 26
 
 local function Stroke(p, col, thick)
     local s = Instance.new("UIStroke")
-    s.Color = col ; s.Thickness = thick
-    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border ; s.Parent = p
+    s.Color            = col
+    s.Thickness        = thick
+    s.ApplyStrokeMode  = Enum.ApplyStrokeMode.Border
+    s.Parent           = p
 end
 
+-- ─── Main ScreenGui ───────────────────────────────────────────────────────────
 local Gui = Instance.new("ScreenGui")
-Gui.Name = "Anxiee_Visuals" ; Gui.ResetOnSpawn = false
-Gui.ZIndexBehavior = Enum.ZIndexBehavior.Global ; Gui.IgnoreGuiInset = true
-Gui.DisplayOrder = 0x7FFFFFFE ; Gui.Parent = PlayerGui
+Gui.Name           = "Anxiee_Visuals"
+Gui.ResetOnSpawn   = false
+Gui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+Gui.IgnoreGuiInset = true
+Gui.DisplayOrder   = 0x7FFFFFFE
+Gui.Parent         = PlayerGui
 
 local Win = Instance.new("Frame")
-Win.Name = "Window" ; Win.Size = UDim2.new(0, WIN_W, 0, 100)
-Win.Position = UDim2.new(0.5, -(WIN_W/2), 0.5, -120)
-Win.BackgroundColor3 = C.WinBg ; Win.BorderSizePixel = 0
-Win.ZIndex = 200 ; Win.Parent = Gui
+Win.Name             = "Window"
+Win.Size             = UDim2.new(0, WIN_W, 0, 100)
+Win.Position         = UDim2.new(0.5, -(WIN_W/2), 0.5, -120)
+Win.BackgroundColor3 = C.WinBg
+Win.BorderSizePixel  = 0
+Win.ZIndex           = 200
+Win.Parent           = Gui
 Stroke(Win, C.Border, 1)
 
 local TitleBar = Instance.new("Frame")
-TitleBar.Name = "TitleBar" ; TitleBar.Size = UDim2.new(1,0,0,TitleH)
-TitleBar.BackgroundColor3 = C.TitleBg ; TitleBar.BorderSizePixel = 0
-TitleBar.ZIndex = 201 ; TitleBar.Parent = Win
+TitleBar.Name             = "TitleBar"
+TitleBar.Size             = UDim2.new(1,0,0,TitleH)
+TitleBar.BackgroundColor3 = C.TitleBg
+TitleBar.BorderSizePixel  = 0
+TitleBar.ZIndex           = 201
+TitleBar.Parent           = Win
 
 local TitleLbl = Instance.new("TextLabel")
-TitleLbl.Size = UDim2.new(1,-30,1,0) ; TitleLbl.Position = UDim2.new(0,PAD_X,0,0)
-TitleLbl.BackgroundTransparency = 1 ; TitleLbl.Text = "Visuals"
-TitleLbl.TextColor3 = C.TitleBgText ; TitleLbl.Font = FONT
-TitleLbl.TextSize = FONT_SIZE ; TitleLbl.TextXAlignment = Enum.TextXAlignment.Left
-TitleLbl.ZIndex = 202 ; TitleLbl.Parent = TitleBar
+TitleLbl.Size                   = UDim2.new(1,-30,1,0)
+TitleLbl.Position               = UDim2.new(0,PAD_X,0,0)
+TitleLbl.BackgroundTransparency = 1
+TitleLbl.Text                   = "Visuals"
+TitleLbl.TextColor3             = C.TitleBgText
+TitleLbl.Font                   = FONT
+TitleLbl.TextSize               = FONT_SIZE
+TitleLbl.TextXAlignment         = Enum.TextXAlignment.Left
+TitleLbl.ZIndex                 = 202
+TitleLbl.Parent                 = TitleBar
 
 local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size = UDim2.new(0,TitleH-2,0,TitleH-2)
-CloseBtn.Position = UDim2.new(1,-(TitleH),0,1)
+CloseBtn.Size             = UDim2.new(0,TitleH-2,0,TitleH-2)
+CloseBtn.Position         = UDim2.new(1,-(TitleH),0,1)
 CloseBtn.BackgroundColor3 = Color3.fromRGB(200,60,60)
-CloseBtn.Text = "x" ; CloseBtn.TextColor3 = Color3.fromRGB(255,255,255)
-CloseBtn.Font = FONT ; CloseBtn.TextSize = FONT_SIZE
-CloseBtn.AutoButtonColor = false ; CloseBtn.BorderSizePixel = 0
-CloseBtn.ZIndex = 203 ; CloseBtn.Parent = TitleBar
+CloseBtn.Text             = "x"
+CloseBtn.TextColor3       = Color3.fromRGB(255,255,255)
+CloseBtn.Font             = FONT
+CloseBtn.TextSize         = FONT_SIZE
+CloseBtn.AutoButtonColor  = false
+CloseBtn.BorderSizePixel  = 0
+CloseBtn.ZIndex           = 203
+CloseBtn.Parent           = TitleBar
 Stroke(CloseBtn, Color3.fromRGB(150,40,40), 1)
-CloseBtn.MouseButton1Click:Connect(function() Gui.Enabled = false end)
-CloseBtn.TouchTap:Connect(function() Gui.Enabled = false end)
+CloseBtn.Activated:Connect(function() Gui.Enabled = false end)
 
 local TitleSep = Instance.new("Frame")
-TitleSep.Size = UDim2.new(1,0,0,1) ; TitleSep.Position = UDim2.new(0,0,0,TitleH)
-TitleSep.BackgroundColor3 = C.SepLine ; TitleSep.BorderSizePixel = 0
-TitleSep.ZIndex = 201 ; TitleSep.Parent = Win
+TitleSep.Size             = UDim2.new(1,0,0,1)
+TitleSep.Position         = UDim2.new(0,0,0,TitleH)
+TitleSep.BackgroundColor3 = C.SepLine
+TitleSep.BorderSizePixel  = 0
+TitleSep.ZIndex           = 201
+TitleSep.Parent           = Win
 
-local function MakeCheckbox(parent, key, labelText, yPos)
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ─── CHECKBOX ─────────────────────────────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════════════════════
+local function MakeCheckbox(parent, key, labelText, yPos, onToggle)
     local Row = Instance.new("Frame")
-    Row.Name = "Row_"..key ; Row.Size = UDim2.new(1,-PAD_X*2,0,ROW_H)
-    Row.Position = UDim2.new(0,PAD_X,0,yPos) ; Row.BackgroundTransparency = 1
-    Row.ZIndex = 202 ; Row.Parent = parent
+    Row.Name                   = "Row_"..key
+    Row.Size                   = UDim2.new(1,-PAD_X*2,0,ROW_H)
+    Row.Position               = UDim2.new(0,PAD_X,0,yPos)
+    Row.BackgroundTransparency = 1
+    Row.ZIndex                 = 202
+    Row.Parent                 = parent
 
     local Box = Instance.new("Frame")
-    Box.Size = UDim2.new(0,CHECK_S,0,CHECK_S) ; Box.Position = UDim2.new(0,0,0.5,-CHECK_S/2)
-    Box.BackgroundColor3 = C.FrameBg ; Box.BorderSizePixel = 0
-    Box.ZIndex = 203 ; Box.Parent = Row
+    Box.Size             = UDim2.new(0,CHECK_S,0,CHECK_S)
+    Box.Position         = UDim2.new(0,0,0.5,-CHECK_S/2)
+    Box.BackgroundColor3 = C.FrameBg
+    Box.BorderSizePixel  = 0
+    Box.ZIndex           = 203
+    Box.Parent           = Row
     Stroke(Box, C.Border, 1)
 
     local Tick = Instance.new("TextLabel")
-    Tick.Size = UDim2.new(1,0,1,0) ; Tick.BackgroundTransparency = 1
-    Tick.Text = "✓" ; Tick.TextColor3 = Color3.fromRGB(255,255,255)
-    Tick.Font = FONT ; Tick.TextSize = CHECK_S - 1
-    Tick.TextXAlignment = Enum.TextXAlignment.Center ; Tick.TextYAlignment = Enum.TextYAlignment.Center
-    Tick.TextTransparency = 1 ; Tick.ZIndex = 204 ; Tick.Parent = Box
+    Tick.Size                   = UDim2.new(1,0,1,0)
+    Tick.BackgroundTransparency = 1
+    Tick.Text                   = "✓"
+    Tick.TextColor3             = Color3.fromRGB(255,255,255)
+    Tick.Font                   = FONT
+    Tick.TextSize               = CHECK_S - 1
+    Tick.TextXAlignment         = Enum.TextXAlignment.Center
+    Tick.TextYAlignment         = Enum.TextYAlignment.Center
+    Tick.TextTransparency       = 1
+    Tick.ZIndex                 = 204
+    Tick.Parent                 = Box
 
     local Lbl = Instance.new("TextLabel")
-    Lbl.Size = UDim2.new(1,-(CHECK_S+6),1,0) ; Lbl.Position = UDim2.new(0,CHECK_S+6,0,0)
-    Lbl.BackgroundTransparency = 1 ; Lbl.Text = labelText
-    Lbl.TextColor3 = C.Text ; Lbl.Font = FONT ; Lbl.TextSize = FONT_SIZE
-    Lbl.TextXAlignment = Enum.TextXAlignment.Left ; Lbl.TextYAlignment = Enum.TextYAlignment.Center
-    Lbl.ZIndex = 203 ; Lbl.Parent = Row
+    Lbl.Size                   = UDim2.new(1,-(CHECK_S+6),1,0)
+    Lbl.Position               = UDim2.new(0,CHECK_S+6,0,0)
+    Lbl.BackgroundTransparency = 1
+    Lbl.Text                   = labelText
+    Lbl.TextColor3             = C.Text
+    Lbl.Font                   = FONT
+    Lbl.TextSize               = FONT_SIZE
+    Lbl.TextXAlignment         = Enum.TextXAlignment.Left
+    Lbl.TextYAlignment         = Enum.TextYAlignment.Center
+    Lbl.ZIndex                 = 203
+    Lbl.Parent                 = Row
 
     local Btn = Instance.new("TextButton")
-    Btn.Size = UDim2.new(1,0,1,0) ; Btn.BackgroundTransparency = 1
-    Btn.Text = "" ; Btn.AutoButtonColor = false ; Btn.ZIndex = 210 ; Btn.Parent = Row
+    Btn.Size                   = UDim2.new(1,0,1,0)
+    Btn.BackgroundTransparency = 1
+    Btn.Text                   = ""
+    Btn.AutoButtonColor        = false
+    Btn.ZIndex                 = 220
+    Btn.Parent                 = Row
 
     local function SetVisual(active)
-        TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = active and C.CheckMark or C.FrameBg }):Play()
+        TweenService:Create(Box,  TWEEN_F, { BackgroundColor3 = active and C.CheckMark or C.FrameBg }):Play()
         TweenService:Create(Tick, TWEEN_F, { TextTransparency = active and 0 or 1 }):Play()
     end
-    local function Toggle() State[key] = not State[key] ; SetVisual(State[key]) end
-    Btn.MouseButton1Click:Connect(Toggle) ; Btn.TouchTap:Connect(Toggle)
-    Btn.MouseEnter:Connect(function() TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = State[key] and C.CheckMark or C.FrameBgHov }):Play() end)
-    Btn.MouseLeave:Connect(function() TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = State[key] and C.CheckMark or C.FrameBg }):Play() end)
+
+    local function Toggle()
+        State[key] = not State[key]
+        SetVisual(State[key])
+        if onToggle then
+            onToggle(State[key])
+        end
+    end
+
+    Btn.Activated:Connect(Toggle)
+
+    Btn.MouseEnter:Connect(function()
+        TweenService:Create(Box, TWEEN_F, {
+            BackgroundColor3 = State[key] and C.CheckMark or C.FrameBgHov
+        }):Play()
+    end)
+    Btn.MouseLeave:Connect(function()
+        TweenService:Create(Box, TWEEN_F, {
+            BackgroundColor3 = State[key] and C.CheckMark or C.FrameBg
+        }):Play()
+    end)
+
     SetVisual(State[key])
 end
 
+-- ─── Section header ───────────────────────────────────────────────────────────
 local function MakeSectionHeader(parent, text, yPos)
     local Sep = Instance.new("Frame")
-    Sep.Size = UDim2.new(1,-PAD_X*2,0,1) ; Sep.Position = UDim2.new(0,PAD_X,0,yPos+6)
-    Sep.BackgroundColor3 = C.SepLine ; Sep.BorderSizePixel = 0 ; Sep.ZIndex = 202 ; Sep.Parent = parent
+    Sep.Size             = UDim2.new(1,-PAD_X*2,0,1)
+    Sep.Position         = UDim2.new(0,PAD_X,0,yPos+6)
+    Sep.BackgroundColor3 = C.SepLine
+    Sep.BorderSizePixel  = 0
+    Sep.ZIndex           = 202
+    Sep.Parent           = parent
+
     local Lbl = Instance.new("TextLabel")
-    Lbl.Size = UDim2.new(1,-PAD_X*2,0,IsMobile and 16 or 18) ; Lbl.Position = UDim2.new(0,PAD_X,0,yPos+8)
-    Lbl.BackgroundTransparency = 1 ; Lbl.Text = text ; Lbl.TextColor3 = C.Header
-    Lbl.Font = FONT ; Lbl.TextSize = IsMobile and 10 or 11 ; Lbl.TextXAlignment = Enum.TextXAlignment.Left
-    Lbl.ZIndex = 202 ; Lbl.Parent = parent
+    Lbl.Size                   = UDim2.new(1,-PAD_X*2,0,IsMobile and 16 or 18)
+    Lbl.Position               = UDim2.new(0,PAD_X,0,yPos+8)
+    Lbl.BackgroundTransparency = 1
+    Lbl.Text                   = text
+    Lbl.TextColor3             = C.Header
+    Lbl.Font                   = FONT
+    Lbl.TextSize               = IsMobile and 10 or 11
+    Lbl.TextXAlignment         = Enum.TextXAlignment.Left
+    Lbl.ZIndex                 = 202
+    Lbl.Parent                 = parent
     return (IsMobile and 16 or 18) + 10
 end
 
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ─── CALLBACKS DE TOGGLE ──────────────────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════════════════════
+
+local function onNameTagToggle(active)
+    if not active then
+        for _, entry in pairs(espPool) do
+            entry.label.Visible = false
+        end
+    end
+end
+
+local function onBoxesToggle(active)
+    if not active then
+        for _, entry in pairs(espPool) do
+            hideBoxESP(entry.boxESP)
+        end
+    end
+end
+
+local function onDistanceToggle(active)
+    if not active then
+        for _, entry in pairs(espPool) do
+            entry.distLabel.Visible = false
+        end
+    end
+end
+
+local function onTracersToggle(active)
+    if not active then
+        for _, entry in pairs(espPool) do
+            entry.tracer.Visible = false
+        end
+    end
+end
+
+local function onChamsToggle(active)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            if active then
+                applyChamsToChar(p.Character)
+            else
+                removeChamsFromChar(p.Character)
+            end
+        end
+    end
+end
+
+local function onSkeletonToggle(active)
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            if active then
+                applySkeletonToChar(p.Character)
+            else
+                removeSkeletonFromChar(p.Character)
+            end
+        end
+    end
+end
+
+-- ─── Layout ───────────────────────────────────────────────────────────────────
 local SECTIONS = {
-    { label = nil, items = {
-        { key="ESP", label="ESP" }, { key="Boxes", label="Boxes" },
-        { key="HealthBar", label="Health Bar" }, { key="NameTag", label="Name Tag" },
-    }},
-    { label = "Extra", items = {
-        { key="Distance", label="Distance" }, { key="Tracers", label="Tracers" },
-    }},
-    { label = "World", items = {
-        { key="Chams", label="Chams" }, { key="FullBright", label="Full Bright" },
-    }},
+    {
+        label = nil,
+        items = {
+            { key = "ESP",       label = "ESP"        },
+            { key = "Boxes",     label = "Boxes",    cb = onBoxesToggle   },
+            { key = "HealthBar", label = "Health Bar" },
+            { key = "NameTag",   label = "Name Tag", cb = onNameTagToggle  },
+        }
+    },
+    {
+        label = "Extra",
+        items = {
+            { key = "Distance", label = "Distance", cb = onDistanceToggle },
+            { key = "Tracers",  label = "Tracers",  cb = onTracersToggle  },
+        }
+    },
+    {
+        label = "World",
+        items = {
+            { key = "Chams",    label = "Chams",    cb = onChamsToggle    },
+            { key = "Skeleton", label = "Skeleton", cb = onSkeletonToggle },
+        }
+    },
 }
 
 local cursor = TitleH + 4
 for _, section in ipairs(SECTIONS) do
-    if section.label then cursor = cursor + MakeSectionHeader(Win, section.label, cursor) end
-    for _, item in ipairs(section.items) do MakeCheckbox(Win, item.key, item.label, cursor) ; cursor += ROW_H end
+    if section.label then
+        cursor = cursor + MakeSectionHeader(Win, section.label, cursor)
+    end
+    for _, item in ipairs(section.items) do
+        MakeCheckbox(Win, item.key, item.label, cursor, item.cb)
+        cursor += ROW_H
+    end
     cursor += PAD_Y
 end
 Win.Size = UDim2.new(0, WIN_W, 0, cursor + 6)
 
+-- ═══════════════════════════════════════════════════════════════════════════════
+-- ─── DRAG — Mouse ─────────────────────────────────────────────────────────────
+-- ═══════════════════════════════════════════════════════════════════════════════
 local dragging, dragStart, winStartPos = false, nil, nil
-TitleBar.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging=true;dragStart=i.Position;winStartPos=Win.Position end end)
-TitleBar.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging=false end end)
+
+TitleBar.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging     = true
+        dragStart    = i.Position
+        winStartPos  = Win.Position
+    end
+end)
+TitleBar.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
 UserInputService.InputChanged:Connect(function(i)
     if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
         local d = i.Position - dragStart
-        Win.Position = UDim2.new(winStartPos.X.Scale,winStartPos.X.Offset+d.X,winStartPos.Y.Scale,winStartPos.Y.Offset+d.Y)
+        Win.Position = UDim2.new(
+            winStartPos.X.Scale, winStartPos.X.Offset + d.X,
+            winStartPos.Y.Scale, winStartPos.Y.Offset + d.Y
+        )
     end
 end)
+
+-- ─── DRAG — Touch ─────────────────────────────────────────────────────────────
 local touchOrigin, touchWinPos = nil, nil
-TitleBar.TouchPan:Connect(function(tp,_,_,state)
-    if state==Enum.UserInputState.Begin then touchOrigin=tp[1];touchWinPos=Win.Position
-    elseif state==Enum.UserInputState.Change and touchWinPos then
-        local d=tp[1]-touchOrigin
-        Win.Position=UDim2.new(touchWinPos.X.Scale,touchWinPos.X.Offset+d.X,touchWinPos.Y.Scale,touchWinPos.Y.Offset+d.Y)
-    elseif state==Enum.UserInputState.End then touchOrigin,touchWinPos=nil,nil end
+
+TitleBar.TouchPan:Connect(function(tp, _, _, state)
+    if state == Enum.UserInputState.Begin then
+        touchOrigin = tp[1]
+        touchWinPos = Win.Position
+    elseif state == Enum.UserInputState.Change and touchWinPos then
+        local d = tp[1] - touchOrigin
+        Win.Position = UDim2.new(
+            touchWinPos.X.Scale, touchWinPos.X.Offset + d.X,
+            touchWinPos.Y.Scale, touchWinPos.Y.Offset + d.Y
+        )
+    elseif state == Enum.UserInputState.End then
+        touchOrigin, touchWinPos = nil, nil
+    end
 end)
