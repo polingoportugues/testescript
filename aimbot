@@ -1,24 +1,20 @@
--- // ANXIEE — Aiming Page
--- // Hospedado no GitHub, executado pela TopBar ao clicar em Aiming
+-- // ANXIEE — Aiming Page (ImGui style)
 
 local Players          = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService     = game:GetService("TweenService")
-local RunService       = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui", 10)
 if not PlayerGui then return end
 
--- Evita duplicata
 if PlayerGui:FindFirstChild("Anxiee_Aiming") then
-    local existing = PlayerGui:FindFirstChild("Anxiee_Aiming")
-    existing.Enabled = not existing.Enabled
+    PlayerGui:FindFirstChild("Anxiee_Aiming").Enabled = not PlayerGui:FindFirstChild("Anxiee_Aiming").Enabled
     return
 end
 
 -- ================================================================
--- ESTADO
+-- STATE
 -- ================================================================
 local State = {
     Aimbot          = false,
@@ -30,47 +26,39 @@ local State = {
 }
 
 -- ================================================================
--- DESIGN TOKENS — mesmos do TopBar
+-- IMGUI TOKENS
 -- ================================================================
 local C = {
-    Bg          = Color3.fromRGB(10, 10, 18),
-    BgPanel     = Color3.fromRGB(14, 13, 24),
-    Border      = Color3.fromRGB(40, 38, 65),
-    Accent      = Color3.fromRGB(110, 85, 255),
-    TextPrimary = Color3.fromRGB(210, 210, 230),
-    TextDim     = Color3.fromRGB(100, 100, 135),
-    CheckBg     = Color3.fromRGB(18, 17, 32),
-    CheckActive = Color3.fromRGB(110, 85, 255),
-    CheckBorder = Color3.fromRGB(55, 52, 90),
-    SepLine     = Color3.fromRGB(30, 28, 52),
-    Header      = Color3.fromRGB(140, 120, 255),
+    WinBg       = Color3.fromRGB(28, 28, 28),
+    TitleBg     = Color3.fromRGB(41, 74, 122),
+    TitleBgText = Color3.fromRGB(255, 255, 255),
+    Border      = Color3.fromRGB(90, 90, 90),
+    FrameBg     = Color3.fromRGB(41, 41, 41),
+    FrameBgHov  = Color3.fromRGB(55, 55, 55),
+    CheckMark   = Color3.fromRGB(79, 144, 220),
+    Text        = Color3.fromRGB(255, 255, 255),
+    TextDim     = Color3.fromRGB(160, 160, 160),
+    SepLine     = Color3.fromRGB(70, 70, 70),
+    Header      = Color3.fromRGB(160, 160, 160),
+    Accent      = Color3.fromRGB(79, 144, 220),
 }
 
-local FONT_BOLD = Enum.Font.GothamBold
-local FONT_REG  = Enum.Font.Gotham
-
-local IsMobile = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-local WIN_W    = IsMobile and 210 or 240
-local WIN_H    = IsMobile and 310 or 340
-local ROW_H    = IsMobile and 26 or 30
-local CHECK_S  = IsMobile and 13 or 15
-local PAD_X    = 12
-local PAD_Y    = 10
-local TWEEN_F  = TweenInfo.new(0.1, Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+local FONT      = Enum.Font.Code
+local IsMobile  = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
+local WIN_W     = IsMobile and 220 or 260
+local ROW_H     = IsMobile and 22 or 24
+local CHECK_S   = IsMobile and 12 or 13
+local PAD_X     = 8
+local PAD_Y     = 6
+local FONT_SIZE = IsMobile and 11 or 13
+local TWEEN_F   = TweenInfo.new(0.06, Enum.EasingStyle.Linear)
 
 -- ================================================================
 -- HELPERS
 -- ================================================================
-local function Corner(p, r)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, r)
-    c.Parent = p
-end
-
 local function Stroke(p, col, thick)
     local s = Instance.new("UIStroke")
-    s.Color = col
-    s.Thickness = thick
+    s.Color = col ; s.Thickness = thick
     s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
     s.Parent = p
 end
@@ -87,174 +75,119 @@ Gui.DisplayOrder   = 0x7FFFFFFE
 Gui.Parent         = PlayerGui
 
 -- ================================================================
--- JANELA PRINCIPAL
+-- WINDOW
 -- ================================================================
 local Win = Instance.new("Frame")
 Win.Name             = "Window"
-Win.Size             = UDim2.new(0, WIN_W, 0, WIN_H)
-Win.Position         = UDim2.new(0.5, -(WIN_W / 2), 0.5, -(WIN_H / 2))
-Win.BackgroundColor3 = C.Bg
+Win.Size             = UDim2.new(0, WIN_W, 0, 100)
+Win.Position         = UDim2.new(0.5, -(WIN_W/2), 0.5, -120)
+Win.BackgroundColor3 = C.WinBg
 Win.BorderSizePixel  = 0
 Win.ZIndex           = 200
 Win.Parent           = Gui
-Corner(Win, 8)
 Stroke(Win, C.Border, 1)
 
--- Gradiente sutil igual ao TopBar
-local WinGrad = Instance.new("UIGradient")
-WinGrad.Color = ColorSequence.new({
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(16, 13, 32)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(8, 8, 16)),
-})
-WinGrad.Rotation = 90
-WinGrad.Parent   = Win
-
 -- ================================================================
--- HEADER
+-- TITLE BAR (ImGui blue)
 -- ================================================================
-local Header = Instance.new("Frame")
-Header.Name             = "Header"
-Header.Size             = UDim2.new(1, 0, 0, IsMobile and 32 or 38)
-Header.BackgroundColor3 = Color3.fromRGB(13, 11, 26)
-Header.BorderSizePixel  = 0
-Header.ZIndex           = 201
-Header.Parent           = Win
-Corner(Header, 8)
+local TitleH = IsMobile and 22 or 26
 
--- Cobre cantos inferiores do header
-local HeaderFill = Instance.new("Frame")
-HeaderFill.Size             = UDim2.new(1, 0, 0, 10)
-HeaderFill.Position         = UDim2.new(0, 0, 1, -10)
-HeaderFill.BackgroundColor3 = Color3.fromRGB(13, 11, 26)
-HeaderFill.BorderSizePixel  = 0
-HeaderFill.ZIndex           = 201
-HeaderFill.Parent           = Header
+local TitleBar = Instance.new("Frame")
+TitleBar.Name             = "TitleBar"
+TitleBar.Size             = UDim2.new(1, 0, 0, TitleH)
+TitleBar.BackgroundColor3 = C.TitleBg
+TitleBar.BorderSizePixel  = 0
+TitleBar.ZIndex           = 201
+TitleBar.Parent           = Win
 
 local TitleLbl = Instance.new("TextLabel")
-TitleLbl.Size               = UDim2.new(1, -36, 1, 0)
+TitleLbl.Size               = UDim2.new(1, -30, 1, 0)
 TitleLbl.Position           = UDim2.new(0, PAD_X, 0, 0)
 TitleLbl.BackgroundTransparency = 1
 TitleLbl.Text               = "Aiming"
-TitleLbl.TextColor3         = C.Accent
-TitleLbl.Font               = FONT_BOLD
-TitleLbl.TextSize           = IsMobile and 13 or 15
+TitleLbl.TextColor3         = C.TitleBgText
+TitleLbl.Font               = FONT
+TitleLbl.TextSize           = FONT_SIZE
 TitleLbl.TextXAlignment     = Enum.TextXAlignment.Left
 TitleLbl.ZIndex             = 202
-TitleLbl.Parent             = Header
+TitleLbl.Parent             = TitleBar
 
--- Botão fechar
+-- Close button (ImGui style: small × in title)
 local CloseBtn = Instance.new("TextButton")
-CloseBtn.Size               = UDim2.new(0, 22, 0, 22)
-CloseBtn.Position           = UDim2.new(1, -28, 0.5, -11)
-CloseBtn.BackgroundColor3   = Color3.fromRGB(60, 30, 80)
-CloseBtn.Text               = "×"
-CloseBtn.TextColor3         = Color3.fromRGB(200, 180, 255)
-CloseBtn.Font               = FONT_BOLD
-CloseBtn.TextSize           = 16
+CloseBtn.Size               = UDim2.new(0, TitleH - 2, 0, TitleH - 2)
+CloseBtn.Position           = UDim2.new(1, -(TitleH), 0, 1)
+CloseBtn.BackgroundColor3   = Color3.fromRGB(200, 60, 60)
+CloseBtn.Text               = "x"
+CloseBtn.TextColor3         = Color3.fromRGB(255, 255, 255)
+CloseBtn.Font               = FONT
+CloseBtn.TextSize           = FONT_SIZE
 CloseBtn.AutoButtonColor    = false
 CloseBtn.BorderSizePixel    = 0
 CloseBtn.ZIndex             = 203
-CloseBtn.Parent             = Header
-Corner(CloseBtn, 5)
+CloseBtn.Parent             = TitleBar
+Stroke(CloseBtn, Color3.fromRGB(150, 40, 40), 1)
 
-CloseBtn.MouseButton1Click:Connect(function()
-    Gui.Enabled = false
-end)
-CloseBtn.TouchTap:Connect(function()
-    Gui.Enabled = false
-end)
+CloseBtn.MouseButton1Click:Connect(function() Gui.Enabled = false end)
+CloseBtn.TouchTap:Connect(function() Gui.Enabled = false end)
 
--- Linha separadora abaixo do header
-local HLine = Instance.new("Frame")
-HLine.Size             = UDim2.new(1, -PAD_X * 2, 0, 1)
-HLine.Position         = UDim2.new(0, PAD_X, 0, IsMobile and 32 or 38)
-HLine.BackgroundColor3 = C.Border
-HLine.BorderSizePixel  = 0
-HLine.ZIndex           = 201
-HLine.Parent           = Win
+-- Separator line below title
+local TitleSep = Instance.new("Frame")
+TitleSep.Size             = UDim2.new(1, 0, 0, 1)
+TitleSep.Position         = UDim2.new(0, 0, 0, TitleH)
+TitleSep.BackgroundColor3 = C.SepLine
+TitleSep.BorderSizePixel  = 0
+TitleSep.ZIndex           = 201
+TitleSep.Parent           = Win
 
 -- ================================================================
--- SCROLL / CONTEÚDO
--- ================================================================
-local ContentY = (IsMobile and 32 or 38) + 8
-
-local SECTIONS = {
-    {
-        label = nil,  -- sem header de secção, directo
-        items = {
-            { key = "Aimbot",     label = "Aimbot"     },
-            { key = "Smoothness", label = "Smoothness"  },
-        }
-    },
-    {
-        label = "FOV",
-        items = {
-            { key = "FOVCircle", label = "FOV Circle" },
-            { key = "SizeFOV",   label = "Size FOV"   },
-        }
-    },
-    {
-        label = "Filters",
-        items = {
-            { key = "TeamCheck",       label = "Team Check"       },
-            { key = "VisibilityCheck", label = "Visibility Check" },
-        }
-    },
-}
-
--- ================================================================
--- CHECKBOX BUILDER
+-- CHECKBOX BUILDER (ImGui style)
 -- ================================================================
 local function MakeCheckbox(parent, key, labelText, yPos)
     local Row = Instance.new("Frame")
-    Row.Name             = "Row_" .. key
-    Row.Size             = UDim2.new(1, -PAD_X * 2, 0, ROW_H)
-    Row.Position         = UDim2.new(0, PAD_X, 0, yPos)
+    Row.Name                 = "Row_" .. key
+    Row.Size                 = UDim2.new(1, -PAD_X * 2, 0, ROW_H)
+    Row.Position             = UDim2.new(0, PAD_X, 0, yPos)
     Row.BackgroundTransparency = 1
-    Row.ZIndex           = 202
-    Row.Parent           = parent
+    Row.ZIndex               = 202
+    Row.Parent               = parent
 
-    -- Caixa do checkbox
+    -- Square frame background (ImGui: FrameBg color, no radius)
     local Box = Instance.new("Frame")
-    Box.Name             = "Box"
     Box.Size             = UDim2.new(0, CHECK_S, 0, CHECK_S)
-    Box.Position         = UDim2.new(0, 0, 0.5, -CHECK_S / 2)
-    Box.BackgroundColor3 = C.CheckBg
+    Box.Position         = UDim2.new(0, 0, 0.5, -CHECK_S/2)
+    Box.BackgroundColor3 = C.FrameBg
     Box.BorderSizePixel  = 0
     Box.ZIndex           = 203
     Box.Parent           = Row
-    Corner(Box, 3)
-    Stroke(Box, C.CheckBorder, 1)
+    Stroke(Box, C.Border, 1)
 
-    -- Tick (checkmark) — visível só quando activo
+    -- Checkmark (ImGui uses a drawn checkmark, we use text)
     local Tick = Instance.new("TextLabel")
     Tick.Size               = UDim2.new(1, 0, 1, 0)
     Tick.BackgroundTransparency = 1
     Tick.Text               = "✓"
-    Tick.TextColor3         = Color3.fromRGB(255, 255, 255)
-    Tick.Font               = FONT_BOLD
-    Tick.TextSize           = IsMobile and 9 or 11
+    Tick.TextColor3         = C.CheckMark
+    Tick.Font               = FONT
+    Tick.TextSize           = CHECK_S - 1
     Tick.TextXAlignment     = Enum.TextXAlignment.Center
     Tick.TextYAlignment     = Enum.TextYAlignment.Center
-    Tick.TextTransparency   = 1   -- invisível por defeito
+    Tick.TextTransparency   = 1
     Tick.ZIndex             = 204
     Tick.Parent             = Box
 
-    -- Label do item
     local Lbl = Instance.new("TextLabel")
-    Lbl.Size               = UDim2.new(1, -(CHECK_S + 8), 1, 0)
-    Lbl.Position           = UDim2.new(0, CHECK_S + 8, 0, 0)
+    Lbl.Size               = UDim2.new(1, -(CHECK_S + 6), 1, 0)
+    Lbl.Position           = UDim2.new(0, CHECK_S + 6, 0, 0)
     Lbl.BackgroundTransparency = 1
     Lbl.Text               = labelText
-    Lbl.TextColor3         = C.TextPrimary
-    Lbl.Font               = FONT_REG
-    Lbl.TextSize           = IsMobile and 11 or 13
+    Lbl.TextColor3         = C.Text
+    Lbl.Font               = FONT
+    Lbl.TextSize           = FONT_SIZE
     Lbl.TextXAlignment     = Enum.TextXAlignment.Left
     Lbl.TextYAlignment     = Enum.TextYAlignment.Center
     Lbl.ZIndex             = 203
     Lbl.Parent             = Row
 
-    -- Botão invisível sobre a row inteira
     local Btn = Instance.new("TextButton")
     Btn.Size               = UDim2.new(1, 0, 1, 0)
     Btn.BackgroundTransparency = 1
@@ -265,13 +198,11 @@ local function MakeCheckbox(parent, key, labelText, yPos)
 
     local function SetVisual(active)
         TweenService:Create(Box, TWEEN_F, {
-            BackgroundColor3 = active and C.CheckActive or C.CheckBg,
+            BackgroundColor3 = active and C.CheckMark or C.FrameBg,
         }):Play()
         TweenService:Create(Tick, TWEEN_F, {
             TextTransparency = active and 0 or 1,
-        }):Play()
-        TweenService:Create(Lbl, TWEEN_F, {
-            TextColor3 = active and Color3.fromRGB(255,255,255) or C.TextPrimary,
+            TextColor3       = active and Color3.fromRGB(255,255,255) or C.CheckMark,
         }):Play()
     end
 
@@ -282,55 +213,64 @@ local function MakeCheckbox(parent, key, labelText, yPos)
 
     Btn.MouseButton1Click:Connect(Toggle)
     Btn.TouchTap:Connect(Toggle)
-
-    -- Hover sutil na row
     Btn.MouseEnter:Connect(function()
-        if not State[key] then
-            TweenService:Create(Lbl, TWEEN_F, {
-                TextColor3 = Color3.fromRGB(175, 165, 255),
-            }):Play()
-        end
+        TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = State[key] and C.CheckMark or C.FrameBgHov }):Play()
     end)
     Btn.MouseLeave:Connect(function()
-        if not State[key] then
-            TweenService:Create(Lbl, TWEEN_F, {
-                TextColor3 = C.TextPrimary,
-            }):Play()
-        end
+        TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = State[key] and C.CheckMark or C.FrameBg }):Play()
     end)
 
     SetVisual(State[key])
-    return Row
 end
 
 -- ================================================================
--- RENDERIZA SECÇÕES
+-- SECTION SEPARATOR (ImGui separator + label)
 -- ================================================================
 local function MakeSectionHeader(parent, text, yPos)
-    local Lbl = Instance.new("TextLabel")
-    Lbl.Size               = UDim2.new(1, -PAD_X * 2, 0, IsMobile and 18 or 20)
-    Lbl.Position           = UDim2.new(0, PAD_X, 0, yPos)
-    Lbl.BackgroundTransparency = 1
-    Lbl.Text               = text
-    Lbl.TextColor3         = C.Header
-    Lbl.Font               = FONT_BOLD
-    Lbl.TextSize           = IsMobile and 9 or 10
-    Lbl.TextXAlignment     = Enum.TextXAlignment.Left
-    Lbl.ZIndex             = 202
-    Lbl.Parent             = parent
-
     local Sep = Instance.new("Frame")
-    Sep.Size             = UDim2.new(1, -PAD_X * 2, 0, 1)
-    Sep.Position         = UDim2.new(0, PAD_X, 0, yPos + (IsMobile and 18 or 20))
+    Sep.Size             = UDim2.new(1, -PAD_X*2, 0, 1)
+    Sep.Position         = UDim2.new(0, PAD_X, 0, yPos + 6)
     Sep.BackgroundColor3 = C.SepLine
     Sep.BorderSizePixel  = 0
     Sep.ZIndex           = 202
     Sep.Parent           = parent
 
-    return (IsMobile and 18 or 20) + 4
+    local Lbl = Instance.new("TextLabel")
+    Lbl.Size               = UDim2.new(1, -PAD_X*2, 0, IsMobile and 16 or 18)
+    Lbl.Position           = UDim2.new(0, PAD_X, 0, yPos + 8)
+    Lbl.BackgroundTransparency = 1
+    Lbl.Text               = text
+    Lbl.TextColor3         = C.Header
+    Lbl.Font               = FONT
+    Lbl.TextSize           = IsMobile and 10 or 11
+    Lbl.TextXAlignment     = Enum.TextXAlignment.Left
+    Lbl.ZIndex             = 202
+    Lbl.Parent             = parent
+
+    return (IsMobile and 16 or 18) + 10
 end
 
-local cursor = ContentY
+-- ================================================================
+-- LAYOUT
+-- ================================================================
+local SECTIONS = {
+    { label = nil, items = {
+        { key = "Aimbot",     label = "Aimbot"     },
+        { key = "Smoothness", label = "Smoothness"  },
+    }},
+    { label = "FOV", items = {
+        { key = "FOVCircle", label = "FOV Circle" },
+        { key = "SizeFOV",   label = "Size FOV"   },
+    }},
+    { label = "Filters", items = {
+        { key = "TeamCheck",       label = "Team Check"       },
+        { key = "VisibilityCheck", label = "Visibility Check" },
+    }},
+}
+
+local ContentY = TitleH + 4
+local cursor   = ContentY
+
 for _, section in ipairs(SECTIONS) do
     if section.label then
         cursor = cursor + MakeSectionHeader(Win, section.label, cursor)
@@ -342,60 +282,40 @@ for _, section in ipairs(SECTIONS) do
     cursor = cursor + PAD_Y
 end
 
--- Ajusta altura da janela ao conteúdo
 Win.Size = UDim2.new(0, WIN_W, 0, cursor + 6)
 
 -- ================================================================
 -- DRAG — PC
 -- ================================================================
-local dragging    = false
-local dragStart   = nil
-local winStartPos = nil
-
-Header.InputBegan:Connect(function(input)
+local dragging, dragStart, winStartPos = false, nil, nil
+TitleBar.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging    = true
-        dragStart   = input.Position
-        winStartPos = Win.Position
+        dragging = true ; dragStart = input.Position ; winStartPos = Win.Position
     end
 end)
-Header.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = false
-    end
+TitleBar.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
 end)
 UserInputService.InputChanged:Connect(function(input)
     if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local delta = input.Position - dragStart
-        Win.Position = UDim2.new(
-            winStartPos.X.Scale,
-            winStartPos.X.Offset + delta.X,
-            winStartPos.Y.Scale,
-            winStartPos.Y.Offset + delta.Y
-        )
+        local d = input.Position - dragStart
+        Win.Position = UDim2.new(winStartPos.X.Scale, winStartPos.X.Offset + d.X,
+                                  winStartPos.Y.Scale, winStartPos.Y.Offset + d.Y)
     end
 end)
 
 -- ================================================================
 -- DRAG — MOBILE
 -- ================================================================
-local touchOrigin = nil
-local touchWinPos = nil
-
-Header.TouchPan:Connect(function(touchPositions, _, _, state)
+local touchOrigin, touchWinPos = nil, nil
+TitleBar.TouchPan:Connect(function(tp, _, _, state)
     if state == Enum.UserInputState.Begin then
-        touchOrigin = touchPositions[1]
-        touchWinPos = Win.Position
+        touchOrigin = tp[1] ; touchWinPos = Win.Position
     elseif state == Enum.UserInputState.Change and touchWinPos then
-        local delta = touchPositions[1] - touchOrigin
-        Win.Position = UDim2.new(
-            touchWinPos.X.Scale,
-            touchWinPos.X.Offset + delta.X,
-            touchWinPos.Y.Scale,
-            touchWinPos.Y.Offset + delta.Y
-        )
+        local d = tp[1] - touchOrigin
+        Win.Position = UDim2.new(touchWinPos.X.Scale, touchWinPos.X.Offset + d.X,
+                                  touchWinPos.Y.Scale, touchWinPos.Y.Offset + d.Y)
     elseif state == Enum.UserInputState.End then
-        touchOrigin = nil
-        touchWinPos = nil
+        touchOrigin, touchWinPos = nil, nil
     end
 end)
