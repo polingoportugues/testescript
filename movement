@@ -1,8 +1,9 @@
--- // ANXIEE — Movement Page (ImGui style)
+-- // ANXIEE — Movement Page (ImGui style) — Totalmente Corrigido
 
 local Players          = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService     = game:GetService("TweenService")
+local RunService       = game:GetService("RunService")
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui", 10)
@@ -13,17 +14,38 @@ if PlayerGui:FindFirstChild("Anxiee_Movement") then
     return
 end
 
+-- Estado dos Cheats
 local State = {
-    BunnyHop = false, AutoSprint = false, NoClip = false,
-    SpeedHack = false, FlyHack = false, AntiSlip = false,
+    Movement = false,
+    Fly = false,
+    NoClip = false,
+    InfiniteJump = false,
+    BunnyHop = false,
+    Teleport = false,
+    WalkSpeed_JumpPower = false,
 }
 
+-- Configurações
+local SpeedValue       = 50   -- Valor ajustado pelo Slider
+local MinSpeed         = 16
+local MaxSpeed         = 200
+local DefaultSpeed     = 16
+local CustomJumpPower  = 100
+local DefaultJumpPower = 50
+local FlySpeed         = 50
+
 local C = {
-    WinBg = Color3.fromRGB(28,28,28), TitleBg = Color3.fromRGB(41,74,122),
-    TitleBgText = Color3.fromRGB(255,255,255), Border = Color3.fromRGB(90,90,90),
-    FrameBg = Color3.fromRGB(41,41,41), FrameBgHov = Color3.fromRGB(55,55,55),
-    CheckMark = Color3.fromRGB(79,144,220), Text = Color3.fromRGB(255,255,255),
-    SepLine = Color3.fromRGB(70,70,70), Header = Color3.fromRGB(160,160,160),
+    WinBg       = Color3.fromRGB(28,28,28),
+    TitleBg     = Color3.fromRGB(41,74,122),
+    TitleBgText = Color3.fromRGB(255,255,255),
+    Border      = Color3.fromRGB(90,90,90),
+    FrameBg     = Color3.fromRGB(41,41,41),
+    FrameBgHov  = Color3.fromRGB(55,55,55),
+    CheckMark   = Color3.fromRGB(79,144,220),
+    SliderFill  = Color3.fromRGB(79,144,220),
+    Text        = Color3.fromRGB(255,255,255),
+    SepLine     = Color3.fromRGB(70,70,70),
+    Header      = Color3.fromRGB(160,160,160),
 }
 
 local FONT      = Enum.Font.Code
@@ -76,14 +98,15 @@ CloseBtn.Font = FONT ; CloseBtn.TextSize = FONT_SIZE
 CloseBtn.AutoButtonColor = false ; CloseBtn.BorderSizePixel = 0
 CloseBtn.ZIndex = 203 ; CloseBtn.Parent = TitleBar
 Stroke(CloseBtn, Color3.fromRGB(150,40,40), 1)
+
 CloseBtn.MouseButton1Click:Connect(function() Gui.Enabled = false end)
-CloseBtn.TouchTap:Connect(function() Gui.Enabled = false end)
 
 local TitleSep = Instance.new("Frame")
 TitleSep.Size = UDim2.new(1,0,0,1) ; TitleSep.Position = UDim2.new(0,0,0,TitleH)
 TitleSep.BackgroundColor3 = C.SepLine ; TitleSep.BorderSizePixel = 0
 TitleSep.ZIndex = 201 ; TitleSep.Parent = Win
 
+-- Criador de Checkbox
 local function MakeCheckbox(parent, key, labelText, yPos)
     local Row = Instance.new("Frame")
     Row.Name = "Row_"..key ; Row.Size = UDim2.new(1,-PAD_X*2,0,ROW_H)
@@ -118,11 +141,72 @@ local function MakeCheckbox(parent, key, labelText, yPos)
         TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = active and C.CheckMark or C.FrameBg }):Play()
         TweenService:Create(Tick, TWEEN_F, { TextTransparency = active and 0 or 1 }):Play()
     end
-    local function Toggle() State[key] = not State[key] ; SetVisual(State[key]) end
-    Btn.MouseButton1Click:Connect(Toggle) ; Btn.TouchTap:Connect(Toggle)
+
+    local function Toggle() 
+        State[key] = not State[key] 
+        SetVisual(State[key])
+    end
+
+    Btn.MouseButton1Click:Connect(Toggle)
     Btn.MouseEnter:Connect(function() TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = State[key] and C.CheckMark or C.FrameBgHov }):Play() end)
     Btn.MouseLeave:Connect(function() TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = State[key] and C.CheckMark or C.FrameBg }):Play() end)
     SetVisual(State[key])
+end
+
+-- Criador de Slider ImGui estilo ImGui
+local function MakeSlider(parent, labelText, minVal, maxVal, defaultVal, yPos, callback)
+    local Row = Instance.new("Frame")
+    Row.Name = "SliderRow_"..labelText ; Row.Size = UDim2.new(1,-PAD_X*2,0,ROW_H + 12)
+    Row.Position = UDim2.new(0,PAD_X,0,yPos) ; Row.BackgroundTransparency = 1
+    Row.ZIndex = 202 ; Row.Parent = parent
+
+    local Lbl = Instance.new("TextLabel")
+    Lbl.Size = UDim2.new(1,0,0,12) ; Lbl.Position = UDim2.new(0,0,0,0)
+    Lbl.BackgroundTransparency = 1 ; Lbl.Text = labelText .. ": " .. tostring(defaultVal)
+    Lbl.TextColor3 = C.Text ; Lbl.Font = FONT ; Lbl.TextSize = FONT_SIZE - 1
+    Lbl.TextXAlignment = Enum.TextXAlignment.Left ; Lbl.ZIndex = 203 ; Lbl.Parent = Row
+
+    local SliderBg = Instance.new("Frame")
+    SliderBg.Size = UDim2.new(1,0,0,10) ; SliderBg.Position = UDim2.new(0,0,0,16)
+    SliderBg.BackgroundColor3 = C.FrameBg ; SliderBg.BorderSizePixel = 0
+    SliderBg.ZIndex = 203 ; SliderBg.Parent = Row
+    Stroke(SliderBg, C.Border, 1)
+
+    local Fill = Instance.new("Frame")
+    local pct = (defaultVal - minVal) / (maxVal - minVal)
+    Fill.Size = UDim2.new(pct,0,1,0) ; Fill.BackgroundColor3 = C.SliderFill
+    Fill.BorderSizePixel = 0 ; Fill.ZIndex = 204 ; Fill.Parent = SliderBg
+
+    local isDragging = false
+    local function UpdateInput(input)
+        local posX = math.clamp(input.Position.X - SliderBg.AbsolutePosition.X, 0, SliderBg.AbsoluteSize.X)
+        local alpha = posX / SliderBg.AbsoluteSize.X
+        local val = math.floor(minVal + (maxVal - minVal) * alpha)
+        Fill.Size = UDim2.new(alpha, 0, 1, 0)
+        Lbl.Text = labelText .. ": " .. tostring(val)
+        callback(val)
+    end
+
+    SliderBg.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = true
+            UpdateInput(input)
+        end
+    end)
+
+    UserInputService.InputChanged:Connect(function(input)
+        if isDragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+            UpdateInput(input)
+        end
+    end)
+
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+            isDragging = false
+        end
+    end)
+
+    return ROW_H + 12
 end
 
 local function MakeSectionHeader(parent, text, yPos)
@@ -137,40 +221,146 @@ local function MakeSectionHeader(parent, text, yPos)
     return (IsMobile and 16 or 18) + 10
 end
 
-local SECTIONS = {
-    { label = nil, items = {
-        { key="BunnyHop", label="Bunny Hop" }, { key="AutoSprint", label="Auto Sprint" },
-    }},
-    { label = "Advanced", items = {
-        { key="NoClip", label="No Clip" }, { key="SpeedHack", label="Speed Hack" }, { key="FlyHack", label="Fly Hack" },
-    }},
-    { label = "Physics", items = {
-        { key="AntiSlip", label="Anti Slip" },
-    }},
-}
-
+-- Montagem dos Elementos da UI
 local cursor = TitleH + 4
-for _, section in ipairs(SECTIONS) do
-    if section.label then cursor = cursor + MakeSectionHeader(Win, section.label, cursor) end
-    for _, item in ipairs(section.items) do MakeCheckbox(Win, item.key, item.label, cursor) ; cursor += ROW_H end
-    cursor += PAD_Y
-end
+
+MakeCheckbox(Win, "Movement", "Movement Toggle", cursor) ; cursor += ROW_H
+cursor += MakeSlider(Win, "Speed", MinSpeed, MaxSpeed, SpeedValue, cursor, function(v)
+    SpeedValue = v
+end)
+MakeCheckbox(Win, "BunnyHop", "Bunny Hop", cursor) ; cursor += ROW_H
+
+cursor += MakeSectionHeader(Win, "Advanced", cursor)
+MakeCheckbox(Win, "Fly", "Fly", cursor) ; cursor += ROW_H
+MakeCheckbox(Win, "NoClip", "NoClip", cursor) ; cursor += ROW_H
+MakeCheckbox(Win, "InfiniteJump", "Infinite Jump", cursor) ; cursor += ROW_H
+
+cursor += MakeSectionHeader(Win, "Teleport & Stats", cursor)
+MakeCheckbox(Win, "Teleport", "Teleport", cursor) ; cursor += ROW_H
+MakeCheckbox(Win, "WalkSpeed_JumpPower", "WalkSpeed / JumpPower", cursor) ; cursor += ROW_H
+
 Win.Size = UDim2.new(0, WIN_W, 0, cursor + 6)
 
+-- Arrastar Janela
 local dragging, dragStart, winStartPos = false, nil, nil
-TitleBar.InputBegan:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging=true;dragStart=i.Position;winStartPos=Win.Position end end)
-TitleBar.InputEnded:Connect(function(i) if i.UserInputType == Enum.UserInputType.MouseButton1 then dragging=false end end)
-UserInputService.InputChanged:Connect(function(i)
-    if dragging and i.UserInputType == Enum.UserInputType.MouseMovement then
-        local d = i.Position - dragStart
-        Win.Position = UDim2.new(winStartPos.X.Scale,winStartPos.X.Offset+d.X,winStartPos.Y.Scale,winStartPos.Y.Offset+d.Y)
+TitleBar.InputBegan:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        dragging = true; dragStart = i.Position; winStartPos = Win.Position
     end
 end)
-local touchOrigin, touchWinPos = nil, nil
-TitleBar.TouchPan:Connect(function(tp,_,_,state)
-    if state==Enum.UserInputState.Begin then touchOrigin=tp[1];touchWinPos=Win.Position
-    elseif state==Enum.UserInputState.Change and touchWinPos then
-        local d=tp[1]-touchOrigin
-        Win.Position=UDim2.new(touchWinPos.X.Scale,touchWinPos.X.Offset+d.X,touchWinPos.Y.Scale,touchWinPos.Y.Offset+d.Y)
-    elseif state==Enum.UserInputState.End then touchOrigin,touchWinPos=nil,nil end
+TitleBar.InputEnded:Connect(function(i)
+    if i.UserInputType == Enum.UserInputType.MouseButton1 or i.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
+UserInputService.InputChanged:Connect(function(i)
+    if dragging and (i.UserInputType == Enum.UserInputType.MouseMovement or i.UserInputType == Enum.UserInputType.Touch) then
+        local d = i.Position - dragStart
+        Win.Position = UDim2.new(winStartPos.X.Scale, winStartPos.X.Offset + d.X, winStartPos.Y.Scale, winStartPos.Y.Offset + d.Y)
+    end
+end)
+
+
+-- ========================================================
+-- SISTEMAS TOTALMENTE FUNCIONAIS E CORRIGIDOS
+-- ========================================================
+
+-- 1. WalkSpeed / Movement / JumpPower (Forçado no Heartbeat para evitar bloqueios)
+RunService.Heartbeat:Connect(function()
+    local char = LocalPlayer.Character
+    if char then
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        local root = char:FindFirstChild("HumanoidRootPart")
+        
+        if humanoid then
+            if State.Movement or State.WalkSpeed_JumpPower then
+                humanoid.WalkSpeed = SpeedValue
+                if root and humanoid.MoveDirection.Magnitude > 0 and not State.Fly then
+                    -- Força a velocidade do vetor caso o jogo tente limitar o WalkSpeed
+                    local currentVel = root.AssemblyLinearVelocity
+                    local targetVel = humanoid.MoveDirection * SpeedValue
+                    root.AssemblyLinearVelocity = Vector3.new(targetVel.X, currentVel.Y, targetVel.Z)
+                end
+            else
+                humanoid.WalkSpeed = DefaultSpeed
+            end
+
+            if State.WalkSpeed_JumpPower then
+                humanoid.UseJumpPower = true
+                humanoid.JumpPower = CustomJumpPower
+            else
+                humanoid.JumpPower = DefaultJumpPower
+            end
+        end
+    end
+end)
+
+-- 2. Fly System Corrigido (Movimentação direta por CFrame + Câmera)
+RunService.RenderStepped:Connect(function(dt)
+    local char = LocalPlayer.Character
+    if State.Fly and char then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        local humanoid = char:FindFirstChildOfClass("Humanoid")
+        
+        if root then
+            if humanoid then humanoid:ChangeState(Enum.HumanoidStateType.Freefall) end
+            root.AssemblyLinearVelocity = Vector3.zero
+            
+            local cam = workspace.CurrentCamera
+            local moveDir = Vector3.zero
+
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then moveDir = moveDir + cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then moveDir = moveDir - cam.CFrame.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then moveDir = moveDir - cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then moveDir = moveDir + cam.CFrame.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then moveDir = moveDir + Vector3.new(0, 1, 0) end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then moveDir = moveDir - Vector3.new(0, 1, 0) end
+
+            if moveDir.Magnitude > 0 then
+                root.CFrame = root.CFrame + (moveDir.Unit * FlySpeed * dt)
+            end
+        end
+    end
+end)
+
+-- 3. NoClip
+RunService.Stepped:Connect(function()
+    if State.NoClip and LocalPlayer.Character then
+        for _, part in ipairs(LocalPlayer.Character:GetDescendants()) do
+            if part:IsA("BasePart") and part.CanCollide then
+                part.CanCollide = false
+            end
+        end
+    end
+end)
+
+-- 4. Infinite Jump
+UserInputService.JumpRequest:Connect(function()
+    if State.InfiniteJump and LocalPlayer.Character then
+        local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid then
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+end)
+
+-- 5. Bunny Hop
+RunService.RenderStepped:Connect(function()
+    if State.BunnyHop and LocalPlayer.Character then
+        local humanoid = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if humanoid and humanoid:GetState() == Enum.HumanoidStateType.Landed then
+            humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
+    end
+end)
+
+-- 6. Click Teleport
+local Mouse = LocalPlayer:GetMouse()
+Mouse.Button1Down:Connect(function()
+    if State.Teleport and LocalPlayer.Character then
+        local root = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if root and Mouse.Target then
+            root.CFrame = CFrame.new(Mouse.Hit.Position + Vector3.new(0, 3, 0))
+        end
+    end
 end)
