@@ -1,15 +1,23 @@
--- // ANXIEE — Aiming Page (ImGui style)
+-- // ANXIEE — Aiming Page (Without Silent Aim)
 
 local Players          = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local TweenService     = game:GetService("TweenService")
+local RunService       = game:GetService("RunService")
+local Workspace        = game:GetService("Workspace")
+local Camera           = Workspace.CurrentCamera
 
 local LocalPlayer = Players.LocalPlayer
 local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui", 10)
 if not PlayerGui then return end
 
-if PlayerGui:FindFirstChild("Anxiee_Aiming") then
-    PlayerGui:FindFirstChild("Anxiee_Aiming").Enabled = not PlayerGui:FindFirstChild("Anxiee_Aiming").Enabled
+-- Alterna visibilidade caso reexecutado
+local existingGui = PlayerGui:FindFirstChild("Anxiee_Aiming")
+if existingGui then
+    local existingWin = existingGui:FindFirstChild("Window")
+    if existingWin then
+        existingWin.Visible = not existingWin.Visible
+    end
     return
 end
 
@@ -18,9 +26,10 @@ end
 -- ================================================================
 local State = {
     Aimbot          = false,
-    Smoothness      = false,
+    SmoothnessValue = 5,
     FOVCircle       = false,
-    SizeFOV         = false,
+    FOVSizeValue    = 100,
+    TargetSelection = "Nenhum",
     TeamCheck       = false,
     VisibilityCheck = false,
 }
@@ -45,7 +54,7 @@ local C = {
 
 local FONT      = Enum.Font.Code
 local IsMobile  = UserInputService.TouchEnabled and not UserInputService.KeyboardEnabled
-local WIN_W     = IsMobile and 220 or 260
+local WIN_W     = IsMobile and 230 or 270
 local ROW_H     = IsMobile and 22 or 24
 local CHECK_S   = IsMobile and 12 or 13
 local PAD_X     = 8
@@ -54,17 +63,255 @@ local FONT_SIZE = IsMobile and 11 or 13
 local TWEEN_F   = TweenInfo.new(0.06, Enum.EasingStyle.Linear)
 
 -- ================================================================
--- HELPERS
+-- VIEWMODEL LOCATOR
 -- ================================================================
-local function Stroke(p, col, thick)
-    local s = Instance.new("UIStroke")
-    s.Color = col ; s.Thickness = thick
-    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    s.Parent = p
+local function GetMyViewModel()
+    local viewModelsFolder = Workspace:FindFirstChild("ViewModels") and Workspace.ViewModels:FindFirstChild("FirstPerson")
+    if not viewModelsFolder then return nil end
+
+    for _, model in ipairs(viewModelsFolder:GetChildren()) do
+        if model:IsA("Model") and model:FindFirstChild("HumanoidRootPart") then
+            return model
+        end
+    end
+    return nil
 end
 
 -- ================================================================
--- SCREEN GUI
+-- AIMBOT ENGINE & MULTI-LAYER TEAM CHECK
+-- ================================================================
+
+local function GetCharacter(player)
+    return player and player.Character
+end
+
+local function GetHitbox(character)
+    if not character then return nil end
+    return character:FindFirstChild("HitboxHead")
+        or character:FindFirstChild("PhysicalHitboxHead")
+        or character:FindFirstChild("HitboxHeadSmall")
+        or character:FindFirstChild("Head")
+        or character:FindFirstChild("HumanoidRootPart")
+end
+
+local function GetHumanoid(character)
+    return character and character:FindFirstChildOfClass("Humanoid")
+end
+
+local function IsAlive(character)
+    local hum = GetHumanoid(character)
+    return hum and hum.Health > 0
+end
+
+-- SISTEMA ROBUSTO DE VERIFICAÇÃO DE TIME (ATRIBUTOS, QUEUE PADS & ROBLOX TEAMS)
+local function GetCustomTeam(player)
+    if not player then return nil end
+
+    -- 1. Verificação via Atributos
+    local attrTeam = player:GetAttribute("TeamID") or player:GetAttribute("Team") or player:GetAttribute("TeamName")
+    if attrTeam ~= nil then
+        return attrTeam
+    end
+
+    if player.Character then
+        local charAttrTeam = player.Character:GetAttribute("TeamID") or player.Character:GetAttribute("Team")
+        if charAttrTeam ~= nil then
+            return charAttrTeam
+        end
+    end
+
+    -- 2. Verificação via Workspace (Queue Pads)
+    local important = Workspace:FindFirstChild("Important")
+    if important then
+        for _, obj in ipairs(important:GetDescendants()) do
+            if obj:IsA("ObjectValue") or obj:IsA("StringValue") then
+                if obj.Value == player or obj.Value == player.Name or obj.Value == player.Character then
+                    local teamModel = obj:FindFirstAncestorOfClass("Model") or obj.Parent
+                    if teamModel then
+                        return teamModel.Name
+                    end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function IsSameTeam(player)
+    if not player or player == LocalPlayer then return true end
+
+    -- 1. Tenta por Atributos / Queue Pads
+    local myCustomTeam = GetCustomTeam(LocalPlayer)
+    local targetCustomTeam = GetCustomTeam(player)
+
+    if myCustomTeam ~= nil and targetCustomTeam ~= nil then
+        return myCustomTeam == targetCustomTeam
+    end
+
+    -- 2. Fallback para sistema padrão do Roblox
+    if LocalPlayer.Team and player.Team then
+        return LocalPlayer.Team == player.Team
+    end
+
+    if LocalPlayer.TeamColor and player.TeamColor and LocalPlayer.Team ~= nil then
+        return LocalPlayer.TeamColor == player.TeamColor
+    end
+
+    return false
+end
+
+local rayParams = RaycastParams.new()
+rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+local function IsVisible(targetPart, char)
+    local origin = Camera.CFrame.Position
+    local localChar = GetCharacter(LocalPlayer)
+
+    if not localChar then return false end
+
+    rayParams.FilterDescendantsInstances = {localChar, Camera, Workspace:FindFirstChild("ViewModels")}
+    local result = Workspace:Raycast(origin, targetPart.Position - origin, rayParams)
+    
+    if not result then return true end
+    if result.Instance and (result.Instance:IsDescendantOf(char) or result.Instance:IsDescendantOf(targetPart.Parent)) then
+        return true
+    end
+
+    return false
+end
+
+local function GetScreenCenter()
+    return Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+end
+
+local function WorldToScreen(pos)
+    local screenPos, onScreen = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(screenPos.X, screenPos.Y), onScreen
+end
+
+local function GetDistanceFromCenter(target)
+    local hitbox = GetHitbox(GetCharacter(target))
+    if not hitbox then return math.huge end
+    local screenPos, onScreen = WorldToScreen(hitbox.Position)
+    if not onScreen then return math.huge end
+    return (screenPos - GetScreenCenter()).Magnitude
+end
+
+local function IsInFOV(target)
+    return GetDistanceFromCenter(target) <= State.FOVSizeValue
+end
+
+local function GetClosestTarget()
+    -- Alvo Fixo
+    if State.TargetSelection ~= "Nenhum" then
+        local fixed = Players:FindFirstChild(State.TargetSelection)
+        if fixed and fixed ~= LocalPlayer then
+            local char = GetCharacter(fixed)
+            if char and IsAlive(char) then
+                if not State.TeamCheck or not IsSameTeam(fixed) then
+                    local hitbox = GetHitbox(char)
+                    if hitbox then
+                        if not State.VisibilityCheck or IsVisible(hitbox, char) then
+                            return fixed
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end
+
+    -- Alvo Automático
+    local best, bestDist = nil, math.huge
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            -- Se TeamCheck estiver ativado e for do mesmo time, ignora o alvo
+            if State.TeamCheck and IsSameTeam(plr) then 
+                continue 
+            end
+
+            local char = GetCharacter(plr)
+            if not char or not IsAlive(char) then continue end
+
+            local hitbox = GetHitbox(char)
+            if not hitbox then continue end
+
+            if State.VisibilityCheck and not IsVisible(hitbox, char) then continue end
+            if not IsInFOV(plr) then continue end
+
+            local dist = GetDistanceFromCenter(plr)
+            if dist < bestDist then
+                bestDist = dist
+                best = plr
+            end
+        end
+    end
+    return best
+end
+
+local function GetSmoothFactor()
+    local t = (State.SmoothnessValue - 1) / 19
+    return 0.05 + t * 0.55
+end
+
+-- ================================================================
+-- AIMBOT ENGINE (RENDER PRIORITY CAMERA SYNCHRONIZED)
+-- ================================================================
+
+local function StartAimbot()
+    RunService:UnbindFromRenderStep("AnxieeAimbotUpdate")
+    RunService:BindToRenderStep("AnxieeAimbotUpdate", Enum.RenderPriority.Camera.Value + 1, function()
+        if not State.Aimbot then return end
+
+        local aiming = IsMobile or UserInputService:IsMouseButtonPressed(Enum.UserInputType.MouseButton2)
+        if not aiming then return end
+
+        local target = GetClosestTarget()
+        if not target then return end
+
+        local char = GetCharacter(target)
+        local hitbox = GetHitbox(char)
+        if not hitbox then return end
+
+        local aimPos = hitbox.Position
+        local smooth = GetSmoothFactor()
+
+        -- 1. Trava da Câmera
+        local currentCF = Camera.CFrame
+        local targetCF  = CFrame.new(currentCF.Position, aimPos)
+        local newCameraCF = currentCF:Lerp(targetCF, 1 - smooth)
+        Camera.CFrame   = newCameraCF
+
+        -- 2. Sincronização do ViewModel
+        local vm = GetMyViewModel()
+        if vm then
+            local vmHRP = vm:FindFirstChild("HumanoidRootPart") or vm:FindFirstChild("FakeCamera") or vm:FindFirstChild("Root")
+            if vmHRP then
+                vmHRP.CFrame = newCameraCF
+            else
+                vm:PivotTo(newCameraCF)
+            end
+        end
+
+        -- 3. Sincronização do Corpo
+        local myChar = GetCharacter(LocalPlayer)
+        if myChar and IsAlive(myChar) then
+            local root = myChar:FindFirstChild("HumanoidRootPart")
+            if root then
+                local rootLookPos = Vector3.new(aimPos.X, root.Position.Y, aimPos.Z)
+                root.CFrame = root.CFrame:Lerp(CFrame.new(root.Position, rootLookPos), 1 - smooth)
+            end
+        end
+    end)
+end
+
+local function StopAimbot()
+    RunService:UnbindFromRenderStep("AnxieeAimbotUpdate")
+end
+
+-- ================================================================
+-- GUI & FOV OVERLAY
 -- ================================================================
 local Gui = Instance.new("ScreenGui")
 Gui.Name           = "Anxiee_Aiming"
@@ -74,22 +321,68 @@ Gui.IgnoreGuiInset = true
 Gui.DisplayOrder   = 0x7FFFFFFE
 Gui.Parent         = PlayerGui
 
+local FOVGui = Instance.new("ScreenGui")
+FOVGui.Name           = "Anxiee_FOVOverlay"
+FOVGui.ResetOnSpawn   = false
+FOVGui.ZIndexBehavior = Enum.ZIndexBehavior.Global
+FOVGui.IgnoreGuiInset = true
+FOVGui.DisplayOrder   = 0x7FFFFFFD
+FOVGui.Parent         = PlayerGui
+
+local FOVFrame = Instance.new("Frame")
+FOVFrame.Name                = "FOVCircle"
+FOVFrame.BackgroundTransparency = 1
+FOVFrame.Size                = UDim2.new(0, 200, 0, 200)
+FOVFrame.Position            = UDim2.new(0.5, -100, 0.5, -100)
+FOVFrame.BorderSizePixel     = 0
+FOVFrame.ZIndex              = 100
+FOVFrame.Visible             = false
+FOVFrame.Parent              = FOVGui
+
+local FOVCorner = Instance.new("UICorner")
+FOVCorner.CornerRadius = UDim.new(1, 0)
+FOVCorner.Parent       = FOVFrame
+
+local FOVStroke = Instance.new("UIStroke")
+FOVStroke.Color     = Color3.fromRGB(255, 255, 255)
+FOVStroke.Thickness = 1
+FOVStroke.Parent    = FOVFrame
+
+local function UpdateFOVCircle()
+    FOVFrame.Visible = State.FOVCircle
+    if State.FOVCircle then
+        local size = State.FOVSizeValue * 2
+        FOVFrame.Size     = UDim2.new(0, size, 0, size)
+        FOVFrame.Position = UDim2.new(0.5, -State.FOVSizeValue, 0.5, -State.FOVSizeValue)
+    end
+end
+
+RunService.RenderStepped:Connect(function()
+    if State.FOVCircle then
+        UpdateFOVCircle()
+    end
+end)
+
+local function Stroke(p, col, thick)
+    local s = Instance.new("UIStroke")
+    s.Color = col ; s.Thickness = thick
+    s.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    s.Parent = p
+end
+
 -- ================================================================
--- WINDOW
+-- WINDOW & TITLE BAR
 -- ================================================================
 local Win = Instance.new("Frame")
 Win.Name             = "Window"
 Win.Size             = UDim2.new(0, WIN_W, 0, 100)
-Win.Position         = UDim2.new(0.5, -(WIN_W/2), 0.5, -120)
+Win.Position         = UDim2.new(0.5, -(WIN_W/2), 0.4, -120)
 Win.BackgroundColor3 = C.WinBg
 Win.BorderSizePixel  = 0
 Win.ZIndex           = 200
 Win.Parent           = Gui
 Stroke(Win, C.Border, 1)
 
--- ================================================================
--- TITLE BAR (ImGui blue)
--- ================================================================
 local TitleH = IsMobile and 22 or 26
 
 local TitleBar = Instance.new("Frame")
@@ -112,7 +405,6 @@ TitleLbl.TextXAlignment     = Enum.TextXAlignment.Left
 TitleLbl.ZIndex             = 202
 TitleLbl.Parent             = TitleBar
 
--- Close button (ImGui style: small × in title)
 local CloseBtn = Instance.new("TextButton")
 CloseBtn.Size               = UDim2.new(0, TitleH - 2, 0, TitleH - 2)
 CloseBtn.Position           = UDim2.new(1, -(TitleH), 0, 1)
@@ -127,10 +419,10 @@ CloseBtn.ZIndex             = 203
 CloseBtn.Parent             = TitleBar
 Stroke(CloseBtn, Color3.fromRGB(150, 40, 40), 1)
 
-CloseBtn.MouseButton1Click:Connect(function() Gui.Enabled = false end)
-CloseBtn.TouchTap:Connect(function() Gui.Enabled = false end)
+CloseBtn.Activated:Connect(function()
+    Win.Visible = false
+end)
 
--- Separator line below title
 local TitleSep = Instance.new("Frame")
 TitleSep.Size             = UDim2.new(1, 0, 0, 1)
 TitleSep.Position         = UDim2.new(0, 0, 0, TitleH)
@@ -140,9 +432,9 @@ TitleSep.ZIndex           = 201
 TitleSep.Parent           = Win
 
 -- ================================================================
--- CHECKBOX BUILDER (ImGui style)
+-- CONTROLS BUILDERS
 -- ================================================================
-local function MakeCheckbox(parent, key, labelText, yPos)
+local function MakeCheckbox(parent, key, labelText, yPos, onToggle)
     local Row = Instance.new("Frame")
     Row.Name                 = "Row_" .. key
     Row.Size                 = UDim2.new(1, -PAD_X * 2, 0, ROW_H)
@@ -151,7 +443,6 @@ local function MakeCheckbox(parent, key, labelText, yPos)
     Row.ZIndex               = 202
     Row.Parent               = parent
 
-    -- Square frame background (ImGui: FrameBg color, no radius)
     local Box = Instance.new("Frame")
     Box.Size             = UDim2.new(0, CHECK_S, 0, CHECK_S)
     Box.Position         = UDim2.new(0, 0, 0.5, -CHECK_S/2)
@@ -161,12 +452,11 @@ local function MakeCheckbox(parent, key, labelText, yPos)
     Box.Parent           = Row
     Stroke(Box, C.Border, 1)
 
-    -- Checkmark (ImGui uses a drawn checkmark, we use text)
     local Tick = Instance.new("TextLabel")
     Tick.Size               = UDim2.new(1, 0, 1, 0)
     Tick.BackgroundTransparency = 1
     Tick.Text               = "✓"
-    Tick.TextColor3         = C.CheckMark
+    Tick.TextColor3         = Color3.fromRGB(255, 255, 255)
     Tick.Font               = FONT
     Tick.TextSize           = CHECK_S - 1
     Tick.TextXAlignment     = Enum.TextXAlignment.Center
@@ -202,42 +492,230 @@ local function MakeCheckbox(parent, key, labelText, yPos)
         }):Play()
         TweenService:Create(Tick, TWEEN_F, {
             TextTransparency = active and 0 or 1,
-            TextColor3       = active and Color3.fromRGB(255,255,255) or C.CheckMark,
         }):Play()
     end
 
-    local function Toggle()
+    Btn.Activated:Connect(function()
         State[key] = not State[key]
         SetVisual(State[key])
-    end
-
-    Btn.MouseButton1Click:Connect(Toggle)
-    Btn.TouchTap:Connect(Toggle)
-    Btn.MouseEnter:Connect(function()
-        TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = State[key] and C.CheckMark or C.FrameBgHov }):Play()
-    end)
-    Btn.MouseLeave:Connect(function()
-        TweenService:Create(Box, TWEEN_F, { BackgroundColor3 = State[key] and C.CheckMark or C.FrameBg }):Play()
+        if onToggle then onToggle(State[key]) end
     end)
 
     SetVisual(State[key])
+    return ROW_H
 end
 
--- ================================================================
--- SECTION SEPARATOR (ImGui separator + label)
--- ================================================================
+local function MakeSlider(parent, key, labelText, minVal, maxVal, defaultVal, yPos)
+    local FrameH = ROW_H + 12
+    local Row = Instance.new("Frame")
+    Row.Name                 = "Slider_" .. key
+    Row.Size                 = UDim2.new(1, -PAD_X * 2, 0, FrameH)
+    Row.Position             = UDim2.new(0, PAD_X, 0, yPos)
+    Row.BackgroundTransparency = 1
+    Row.ZIndex               = 202
+    Row.Parent               = parent
+
+    local Lbl = Instance.new("TextLabel")
+    Lbl.Size               = UDim2.new(1, 0, 0, FONT_SIZE + 2)
+    Lbl.Position           = UDim2.new(0, 0, 0, 0)
+    Lbl.BackgroundTransparency = 1
+    Lbl.Text               = labelText .. ": " .. tostring(defaultVal)
+    Lbl.TextColor3         = C.TextDim
+    Lbl.Font               = FONT
+    Lbl.TextSize           = FONT_SIZE - 1
+    Lbl.TextXAlignment     = Enum.TextXAlignment.Left
+    Lbl.ZIndex             = 203
+    Lbl.Parent             = Row
+
+    local Track = Instance.new("Frame")
+    Track.Size             = UDim2.new(1, 0, 0, 10)
+    Track.Position         = UDim2.new(0, 0, 0, FONT_SIZE + 4)
+    Track.BackgroundColor3 = C.FrameBg
+    Track.BorderSizePixel  = 0
+    Track.ZIndex           = 203
+    Track.Parent           = Row
+    Stroke(Track, C.Border, 1)
+
+    local Fill = Instance.new("Frame")
+    local initRatio = (defaultVal - minVal) / (maxVal - minVal)
+    Fill.Size             = UDim2.new(math.clamp(initRatio, 0, 1), 0, 1, 0)
+    Fill.BackgroundColor3 = C.Accent
+    Fill.BorderSizePixel  = 0
+    Fill.ZIndex           = 204
+    Fill.Parent           = Track
+
+    local sliding = false
+    local function UpdateInput(input)
+        local posX = math.clamp(
+            (input.Position.X - Track.AbsolutePosition.X) / Track.AbsoluteSize.X,
+            0, 1
+        )
+        local val = math.floor(minVal + (maxVal - minVal) * posX)
+        State[key] = val
+        Fill.Size = UDim2.new(posX, 0, 1, 0)
+        Lbl.Text = labelText .. ": " .. tostring(val)
+    end
+
+    Track.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            sliding = true
+            UpdateInput(input)
+        end
+    end)
+    UserInputService.InputChanged:Connect(function(input)
+        if sliding and (
+            input.UserInputType == Enum.UserInputType.MouseMovement or
+            input.UserInputType == Enum.UserInputType.Touch
+        ) then
+            UpdateInput(input)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+        or input.UserInputType == Enum.UserInputType.Touch then
+            sliding = false
+        end
+    end)
+
+    return FrameH
+end
+
+local function MakeDropdown(parent, labelText, yPos)
+    local DropH = ROW_H + 16
+    local Container = Instance.new("Frame")
+    Container.Name                 = "TargetDropdown"
+    Container.Size                 = UDim2.new(1, -PAD_X * 2, 0, DropH)
+    Container.Position             = UDim2.new(0, PAD_X, 0, yPos)
+    Container.BackgroundTransparency = 1
+    Container.ZIndex               = 202
+    Container.Parent               = parent
+
+    local Lbl = Instance.new("TextLabel")
+    Lbl.Size               = UDim2.new(1, 0, 0, FONT_SIZE)
+    Lbl.Position           = UDim2.new(0, 0, 0, 0)
+    Lbl.BackgroundTransparency = 1
+    Lbl.Text               = labelText
+    Lbl.TextColor3         = C.TextDim
+    Lbl.Font               = FONT
+    Lbl.TextSize           = FONT_SIZE - 1
+    Lbl.TextXAlignment     = Enum.TextXAlignment.Left
+    Lbl.ZIndex             = 203
+    Lbl.Parent             = Container
+
+    local BoxBtn = Instance.new("TextButton")
+    BoxBtn.Size             = UDim2.new(1, 0, 0, ROW_H)
+    BoxBtn.Position         = UDim2.new(0, 0, 0, FONT_SIZE + 2)
+    BoxBtn.BackgroundColor3 = C.FrameBg
+    BoxBtn.Text             = "  " .. State.TargetSelection .. "  ▼"
+    BoxBtn.TextColor3       = C.Text
+    BoxBtn.Font             = FONT
+    BoxBtn.TextSize         = FONT_SIZE
+    BoxBtn.TextXAlignment   = Enum.TextXAlignment.Left
+    BoxBtn.BorderSizePixel  = 0
+    BoxBtn.ZIndex           = 203
+    BoxBtn.Parent           = Container
+    Stroke(BoxBtn, C.Border, 1)
+
+    local ListFrame = Instance.new("ScrollingFrame")
+    ListFrame.Size             = UDim2.new(1, 0, 0, 0)
+    ListFrame.Position         = UDim2.new(0, 0, 0, FONT_SIZE + 2 + ROW_H + 2)
+    ListFrame.BackgroundColor3 = C.WinBg
+    ListFrame.BorderSizePixel  = 0
+    ListFrame.Visible          = false
+    ListFrame.ZIndex           = 250
+    ListFrame.CanvasSize       = UDim2.new(0, 0, 0, 0)
+    ListFrame.ScrollBarThickness = 3
+    ListFrame.Parent           = Container
+    Stroke(ListFrame, C.Border, 1)
+
+    local UIList = Instance.new("UIListLayout")
+    UIList.Parent = ListFrame
+
+    local expanded = false
+
+    local function RefreshPlayers()
+        for _, child in ipairs(ListFrame:GetChildren()) do
+            if child:IsA("TextButton") then child:Destroy() end
+        end
+
+        local count = 0
+
+        local NoneBtn = Instance.new("TextButton")
+        NoneBtn.Size = UDim2.new(1, 0, 0, ROW_H)
+        NoneBtn.BackgroundColor3 = C.FrameBg
+        NoneBtn.Text = "  [Nenhum / Automático]"
+        NoneBtn.TextColor3 = C.TextDim
+        NoneBtn.Font = FONT
+        NoneBtn.TextSize = FONT_SIZE - 1
+        NoneBtn.TextXAlignment = Enum.TextXAlignment.Left
+        NoneBtn.ZIndex = 251
+        NoneBtn.Parent = ListFrame
+        count = count + 1
+
+        NoneBtn.Activated:Connect(function()
+            State.TargetSelection = "Nenhum"
+            BoxBtn.Text = "  Nenhum  ▼"
+            expanded = false
+            ListFrame.Visible = false
+            ListFrame.Size = UDim2.new(1, 0, 0, 0)
+        end)
+
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                count = count + 1
+                local PBtn = Instance.new("TextButton")
+                PBtn.Size = UDim2.new(1, 0, 0, ROW_H)
+                PBtn.BackgroundColor3 = C.FrameBg
+                PBtn.Text = "  " .. plr.DisplayName .. " (@" .. plr.Name .. ")"
+                PBtn.TextColor3 = C.Text
+                PBtn.Font = FONT
+                PBtn.TextSize = FONT_SIZE - 1
+                PBtn.TextXAlignment = Enum.TextXAlignment.Left
+                PBtn.ZIndex = 251
+                PBtn.Parent = ListFrame
+
+                PBtn.Activated:Connect(function()
+                    State.TargetSelection = plr.Name
+                    BoxBtn.Text = "  " .. plr.Name .. "  ▼"
+                    expanded = false
+                    ListFrame.Visible = false
+                    ListFrame.Size = UDim2.new(1, 0, 0, 0)
+                end)
+            end
+        end
+
+        ListFrame.CanvasSize = UDim2.new(0, 0, 0, count * ROW_H)
+        local displayH = math.min(count * ROW_H, 100)
+        ListFrame.Size = UDim2.new(1, 0, 0, displayH)
+    end
+
+    BoxBtn.Activated:Connect(function()
+        expanded = not expanded
+        if expanded then
+            RefreshPlayers()
+            ListFrame.Visible = true
+        else
+            ListFrame.Visible = false
+            ListFrame.Size = UDim2.new(1, 0, 0, 0)
+        end
+    end)
+
+    return DropH
+end
+
 local function MakeSectionHeader(parent, text, yPos)
     local Sep = Instance.new("Frame")
     Sep.Size             = UDim2.new(1, -PAD_X*2, 0, 1)
-    Sep.Position         = UDim2.new(0, PAD_X, 0, yPos + 6)
+    Sep.Position         = UDim2.new(0, PAD_X, 0, yPos + 4)
     Sep.BackgroundColor3 = C.SepLine
     Sep.BorderSizePixel  = 0
     Sep.ZIndex           = 202
     Sep.Parent           = parent
 
     local Lbl = Instance.new("TextLabel")
-    Lbl.Size               = UDim2.new(1, -PAD_X*2, 0, IsMobile and 16 or 18)
-    Lbl.Position           = UDim2.new(0, PAD_X, 0, yPos + 8)
+    Lbl.Size               = UDim2.new(1, -PAD_X*2, 0, IsMobile and 14 or 16)
+    Lbl.Position           = UDim2.new(0, PAD_X, 0, yPos + 6)
     Lbl.BackgroundTransparency = 1
     Lbl.Text               = text
     Lbl.TextColor3         = C.Header
@@ -247,75 +725,65 @@ local function MakeSectionHeader(parent, text, yPos)
     Lbl.ZIndex             = 202
     Lbl.Parent             = parent
 
-    return (IsMobile and 16 or 18) + 10
+    return (IsMobile and 14 or 16) + 8
 end
 
 -- ================================================================
--- LAYOUT
+-- MONTAGEM DA UI
 -- ================================================================
-local SECTIONS = {
-    { label = nil, items = {
-        { key = "Aimbot",     label = "Aimbot"     },
-        { key = "Smoothness", label = "Smoothness"  },
-    }},
-    { label = "FOV", items = {
-        { key = "FOVCircle", label = "FOV Circle" },
-        { key = "SizeFOV",   label = "Size FOV"   },
-    }},
-    { label = "Filters", items = {
-        { key = "TeamCheck",       label = "Team Check"       },
-        { key = "VisibilityCheck", label = "Visibility Check" },
-    }},
-}
+local cursor = TitleH + 4
 
-local ContentY = TitleH + 4
-local cursor   = ContentY
-
-for _, section in ipairs(SECTIONS) do
-    if section.label then
-        cursor = cursor + MakeSectionHeader(Win, section.label, cursor)
+cursor = cursor + MakeCheckbox(Win, "Aimbot", "Aimbot", cursor, function(active)
+    if active then
+        StartAimbot()
+    else
+        StopAimbot()
     end
-    for _, item in ipairs(section.items) do
-        MakeCheckbox(Win, item.key, item.label, cursor)
-        cursor = cursor + ROW_H
-    end
-    cursor = cursor + PAD_Y
-end
+end)
 
+cursor = cursor + MakeSlider(Win, "SmoothnessValue", "Smoothness", 1, 20, State.SmoothnessValue, cursor)
+
+cursor = cursor + MakeSectionHeader(Win, "FOV", cursor)
+cursor = cursor + MakeCheckbox(Win, "FOVCircle", "FOV Circle", cursor, function()
+    UpdateFOVCircle()
+end)
+cursor = cursor + MakeSlider(Win, "FOVSizeValue", "Size FOV", 30, 300, State.FOVSizeValue, cursor)
+
+cursor = cursor + MakeSectionHeader(Win, "Targeting", cursor)
+cursor = cursor + MakeDropdown(Win, "Target Selection", cursor)
+
+cursor = cursor + MakeSectionHeader(Win, "Filters", cursor)
+cursor = cursor + MakeCheckbox(Win, "TeamCheck", "Team Check", cursor)
+cursor = cursor + MakeCheckbox(Win, "VisibilityCheck", "Visibility Check", cursor)
+
+cursor = cursor + PAD_Y
 Win.Size = UDim2.new(0, WIN_W, 0, cursor + 6)
 
 -- ================================================================
--- DRAG — PC
+-- DRAGGING LOGIC
 -- ================================================================
 local dragging, dragStart, winStartPos = false, nil, nil
+
 TitleBar.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true ; dragStart = input.Position ; winStartPos = Win.Position
-    end
-end)
-TitleBar.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
-end)
-UserInputService.InputChanged:Connect(function(input)
-    if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-        local d = input.Position - dragStart
-        Win.Position = UDim2.new(winStartPos.X.Scale, winStartPos.X.Offset + d.X,
-                                  winStartPos.Y.Scale, winStartPos.Y.Offset + d.Y)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        winStartPos = Win.Position
     end
 end)
 
--- ================================================================
--- DRAG — MOBILE
--- ================================================================
-local touchOrigin, touchWinPos = nil, nil
-TitleBar.TouchPan:Connect(function(tp, _, _, state)
-    if state == Enum.UserInputState.Begin then
-        touchOrigin = tp[1] ; touchWinPos = Win.Position
-    elseif state == Enum.UserInputState.Change and touchWinPos then
-        local d = tp[1] - touchOrigin
-        Win.Position = UDim2.new(touchWinPos.X.Scale, touchWinPos.X.Offset + d.X,
-                                  touchWinPos.Y.Scale, touchWinPos.Y.Offset + d.Y)
-    elseif state == Enum.UserInputState.End then
-        touchOrigin, touchWinPos = nil, nil
+UserInputService.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
+        local d = input.Position - dragStart
+        Win.Position = UDim2.new(
+            winStartPos.X.Scale, winStartPos.X.Offset + d.X,
+            winStartPos.Y.Scale, winStartPos.Y.Offset + d.Y
+        )
+    end
+end)
+
+UserInputService.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
     end
 end)
